@@ -1,0 +1,31 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+build/
+dist/
+release/
+*.spec
+build-self-test.json
+self-test*.json
+
+# Local network and credential data
+gdut_config.json
+gdut_accounts.dat
+gdut_password.dat
+gdut_state.json
+login-gdut.pid
+login_log.txt*
+
+# Personal/legacy working files
+gdut.txt
+Untitled.ipynb
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
