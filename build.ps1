@@ -48,4 +48,21 @@ $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $releaseExe
 "$($hash.Hash.ToLower())  $([System.IO.Path]::GetFileName($releaseExe))" |
     Set-Content -Encoding ASCII -LiteralPath (Join-Path $releaseDir 'SHA256SUMS.txt')
 
+# Keep the workspace lean after a verified build. Published files remain in release/.
+$generatedTargets = @(
+    (Join-Path $projectDir 'build'),
+    (Join-Path $projectDir 'dist'),
+    (Join-Path $projectDir 'GDUTAutoLogin.spec')
+)
+$projectRootFull = [System.IO.Path]::GetFullPath($projectDir)
+foreach ($target in $generatedTargets) {
+    $targetFull = [System.IO.Path]::GetFullPath($target)
+    if (-not $targetFull.StartsWith($projectRootFull + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Unsafe generated-file cleanup path: $targetFull"
+    }
+    if (Test-Path -LiteralPath $targetFull) {
+        Remove-Item -LiteralPath $targetFull -Recurse -Force
+    }
+}
+
 Write-Host "Build complete: $releaseExe"
