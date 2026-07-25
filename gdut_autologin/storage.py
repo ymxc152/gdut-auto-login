@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import base64
-import ctypes
-from ctypes import wintypes
 from contextlib import closing
 import csv
 from datetime import datetime, timedelta, timezone
@@ -24,53 +21,7 @@ from .constants import (
 )
 
 
-class DataBlob(ctypes.Structure):
-    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
-
-
-def _blob_from_bytes(data: bytes) -> tuple[DataBlob, object]:
-    buffer = ctypes.create_string_buffer(data)
-    blob = DataBlob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_byte)))
-    return blob, buffer
-
-
-def protect_data(data: bytes) -> str:
-    input_blob, input_buffer = _blob_from_bytes(data)
-    output_blob = DataBlob()
-    if not ctypes.windll.crypt32.CryptProtectData(
-        ctypes.byref(input_blob),
-        "GDUT Auto Login",
-        None,
-        None,
-        None,
-        0,
-        ctypes.byref(output_blob),
-    ):
-        raise ctypes.WinError()
-    try:
-        encrypted = ctypes.string_at(output_blob.pbData, output_blob.cbData)
-        return base64.b64encode(encrypted).decode("ascii")
-    finally:
-        ctypes.windll.kernel32.LocalFree(output_blob.pbData)
-        del input_buffer
-
-
-def unprotect_data(encoded: str) -> bytes:
-    encrypted = base64.b64decode(encoded)
-    input_blob, input_buffer = _blob_from_bytes(encrypted)
-    output_blob = DataBlob()
-    if not ctypes.windll.crypt32.CryptUnprotectData(
-        ctypes.byref(input_blob), None, None, None, None, 0, ctypes.byref(output_blob)
-    ):
-        raise ctypes.WinError()
-    try:
-        return ctypes.string_at(output_blob.pbData, output_blob.cbData)
-    finally:
-        ctypes.windll.kernel32.LocalFree(output_blob.pbData)
-        del input_buffer
-
-
-def atomic_write_json(path: Path, value: dict) -> None:
+def atomic_write_json(path: Path, value: object) -> None:
     ensure_data_dir()
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -119,10 +70,12 @@ def load_status() -> dict:
 def load_accounts() -> list[dict[str, str]]:
     if not ACCOUNTS_PATH.exists():
         return []
-    raw = unprotect_data(ACCOUNTS_PATH.read_text(encoding="ascii").strip())
-    value = json.loads(raw.decode("utf-8"))
+    try:
+        value = json.loads(ACCOUNTS_PATH.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("账号 JSON 文件无法读取或格式无效。") from exc
     if not isinstance(value, list):
-        raise RuntimeError("加密账号数据格式无效")
+        raise RuntimeError("账号 JSON 文件内容无效。")
     accounts = []
     for item in value:
         if isinstance(item, dict) and item.get("account") and item.get("password"):
@@ -131,9 +84,71 @@ def load_accounts() -> list[dict[str, str]]:
 
 
 def save_accounts(accounts: list[dict[str, str]]) -> None:
-    ensure_data_dir()
-    payload = json.dumps(accounts, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    ACCOUNTS_PATH.write_text(protect_data(payload), encoding="ascii")
+    atomic_write_json(ACCOUNTS_PATH, accounts)
+
+
+def export_accounts_file(destination: Path) -> int:
+    accounts = load_accounts()
+    if not accounts:
+        return 0
+    exported = {
+        "format": "gdut-auto-login-accounts",
+        "version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "accounts": accounts,
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(exported, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(destination)
+    return len(accounts)
+
+
+def import_accounts_file(source: Path) -> tuple[int, int]:
+    try:
+        exported = json.loads(source.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("账号文件无法读取或 JSON 格式无效。") from exc
+    if (
+        isinstance(exported, dict)
+        and exported.get("format") == "gdut-auto-login-accounts"
+        and exported.get("version") == 1
+    ):
+        imported_value = exported.get("accounts")
+    elif isinstance(exported, list):
+        imported_value = exported
+    else:
+        raise RuntimeError("这不是受支持的 GDUT 账号文件。")
+    if not isinstance(imported_value, list):
+        raise RuntimeError("账号文件内容无效。")
+    imported: list[dict[str, str]] = []
+    for item in imported_value:
+        if not isinstance(item, dict):
+            raise RuntimeError("账号文件内容无效。")
+        account = str(item.get("account", "")).strip()
+        password = str(item.get("password", ""))
+        if not account or not password:
+            raise RuntimeError("账号文件中存在空账号或空密码。")
+        imported.append({"account": account, "password": password})
+
+    accounts = load_accounts()
+    positions = {item["account"]: index for index, item in enumerate(accounts)}
+    added = 0
+    updated_accounts: set[str] = set()
+    for item in imported:
+        position = positions.get(item["account"])
+        if position is None:
+            positions[item["account"]] = len(accounts)
+            accounts.append(item)
+            added += 1
+        else:
+            accounts[position] = item
+            updated_accounts.add(item["account"])
+    save_accounts(accounts)
+    return added, len(updated_accounts)
 
 
 def add_or_update_account(account: str, password: str) -> bool:
@@ -335,7 +350,6 @@ def migrate_legacy_data(source_dir: Path) -> list[str]:
     migrated: list[str] = []
     mappings = {
         "gdut_config.json": CONFIG_PATH,
-        "gdut_accounts.dat": ACCOUNTS_PATH,
         "gdut_state.json": STATE_PATH,
     }
     for source_name, destination in mappings.items():

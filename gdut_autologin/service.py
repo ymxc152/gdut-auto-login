@@ -22,9 +22,9 @@ STATUS_TEXT = {
     "portal_required": "需要校园网认证",
     "network_error": "无法访问网络",
     "unexpected_response": "网络响应异常",
-    "adapter_missing": "等待连接 GDUT 网络",
-    "adapter_down": "等待连接 GDUT 网络",
-    "no_ip": "等待连接 GDUT 网络",
+    "adapter_missing": "等待所选网络接口连接",
+    "adapter_down": "等待所选网络接口连接",
+    "no_ip": "等待所选网络接口获取 10 网段地址",
     "login_failed": "自动登录失败",
     "busy": "正在执行其他网络操作",
 }

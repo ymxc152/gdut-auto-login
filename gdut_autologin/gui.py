@@ -4,15 +4,17 @@ from datetime import datetime
 from pathlib import Path
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from .constants import APP_NAME, APP_VERSION
-from .network import AdapterInfo, list_adapters
+from .network import AdapterInfo, connected_physical_adapters, list_adapters
 from .service import perform_check
 from .storage import (
     EventDatabase,
     add_or_update_account,
     edit_account,
+    export_accounts_file,
+    import_accounts_file,
     load_accounts,
     load_config,
     load_state,
@@ -160,8 +162,10 @@ def center_on_parent(
 
 
 class ScrollablePanel(tk.Frame):
-    def __init__(self, parent, background=CARD):
+    def __init__(self, parent, background=CARD, show_scrollbar: bool = True):
         super().__init__(parent, bg=background)
+        self.show_scrollbar = show_scrollbar
+        self._wheel_bound_widgets: set[str] = set()
         self.canvas = tk.Canvas(self, bg=background, highlightthickness=0)
         self.scrollbar = ttk.Scrollbar(
             self, orient="vertical", command=self.canvas.yview, style="Modern.Vertical.TScrollbar"
@@ -175,13 +179,13 @@ class ScrollablePanel(tk.Frame):
         )
         self.canvas.bind("<Configure>", self._canvas_changed)
         self.canvas.bind("<MouseWheel>", self._wheel)
-        self.inner.bind("<MouseWheel>", self._wheel)
 
     def _wheel(self, event):
         self.canvas.yview_scroll(int(-event.delta / 120), "units")
 
     def _content_changed(self, _event=None):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self._bind_mousewheel_tree(self.inner)
         self.after_idle(self._update_scrollbar)
 
     def _canvas_changed(self, event):
@@ -189,11 +193,23 @@ class ScrollablePanel(tk.Frame):
         self.after_idle(self._update_scrollbar)
 
     def _update_scrollbar(self):
+        if not self.show_scrollbar:
+            if self.scrollbar.winfo_ismapped():
+                self.scrollbar.pack_forget()
+            return
         if self.inner.winfo_reqheight() > self.canvas.winfo_height() + 2:
             if not self.scrollbar.winfo_ismapped():
                 self.scrollbar.pack(side="right", fill="y")
         elif self.scrollbar.winfo_ismapped():
             self.scrollbar.pack_forget()
+
+    def _bind_mousewheel_tree(self, widget: tk.Misc):
+        widget_name = str(widget)
+        if widget_name not in self._wheel_bound_widgets:
+            widget.bind("<MouseWheel>", self._wheel, add="+")
+            self._wheel_bound_widgets.add(widget_name)
+        for child in widget.winfo_children():
+            self._bind_mousewheel_tree(child)
 
     def clear(self):
         for child in self.inner.winfo_children():
@@ -263,7 +279,7 @@ class AccountDialog(tk.Toplevel):
         self.original_account = original_account
         self.result: tuple[str, str] | None = None
         self.title("编辑账号" if original_account else "添加账号")
-        self.geometry("470x380")
+        self.geometry("470x430")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
@@ -315,11 +331,12 @@ class AccountDialog(tk.Toplevel):
 
         actions = tk.Frame(body, bg=CARD)
         actions.pack(fill="x", side="bottom")
-        flat_button(actions, "保存", self.save, "primary", width=8).pack(side="right")
+        primary_text = "确认保存" if original_account else "确认添加"
+        flat_button(actions, primary_text, self.save, "primary", width=10).pack(side="right")
         flat_button(actions, "取消", self.destroy, "quiet", width=8).pack(side="right", padx=8)
         self.bind("<Return>", lambda _event: self.save())
         self.bind("<Escape>", lambda _event: self.destroy())
-        self.after_idle(lambda: center_on_parent(self, parent, 470, 380))
+        self.after_idle(lambda: center_on_parent(self, parent, 470, 430))
         self.after_idle(self.account_entry.focus_set)
 
     def save(self):
@@ -343,7 +360,7 @@ class FirstRunDialog(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.title("首次设置")
-        self.geometry("620x520")
+        self.geometry("620x590")
         self.resizable(False, False)
         self.transient(app)
         self.grab_set()
@@ -355,18 +372,33 @@ class FirstRunDialog(tk.Toplevel):
         text_label(body, "完成下面三项设置，之后程序会在后台自动工作。", 9, color=MUTED).pack(
             anchor="w", pady=(5, 22)
         )
-        text_label(body, "1. 选择已连接 GDUT 的网络", 9, "bold").pack(anchor="w")
+        text_label(body, "1. 选择已连接的网络接口", 9, "bold").pack(anchor="w")
+        text_label(
+            body,
+            "请选择 IPv4 地址以 10. 开头的接口；有线校园网可能显示为“未知的网络”。",
+            8,
+            color=MUTED,
+        ).pack(anchor="w", pady=(4, 0))
         self.adapter = ttk.Combobox(body, state="readonly", style="Modern.TCombobox")
         self.adapter.pack(fill="x", ipady=7, pady=(7, 16))
         self.adapters = app.fill_adapters(self.adapter)
 
         self.account = tk.StringVar()
         self.password = tk.StringVar()
+        self.show_password = tk.BooleanVar(value=False)
         self.error = tk.StringVar()
         text_label(body, "2. 输入校园网账号", 9, "bold").pack(anchor="w")
         modern_entry(body, self.account).pack(fill="x", ipady=8, pady=(7, 14))
         text_label(body, "3. 输入校园网密码", 9, "bold").pack(anchor="w")
-        modern_entry(body, self.password, show="●").pack(fill="x", ipady=8, pady=(7, 12))
+        self.password_entry = modern_entry(body, self.password, show="●")
+        self.password_entry.pack(fill="x", ipady=8, pady=(7, 6))
+        check_box(body, "显示密码", self.show_password).pack(anchor="w", pady=(0, 10))
+        self.show_password.trace_add(
+            "write",
+            lambda *_args: self.password_entry.configure(
+                show="" if self.show_password.get() else "●"
+            ),
+        )
         self.autostart = tk.BooleanVar(value=True)
         check_box(body, "登录 Windows 后自动在后台运行", self.autostart).pack(anchor="w")
         tk.Label(
@@ -378,15 +410,17 @@ class FirstRunDialog(tk.Toplevel):
         ).pack(anchor="w", pady=(8, 0))
         actions = tk.Frame(body, bg=CARD)
         actions.pack(fill="x", side="bottom")
-        flat_button(actions, "完成设置", self.finish, "primary").pack(side="right")
+        flat_button(actions, "确认启用", self.finish, "primary", width=10).pack(side="right")
         flat_button(actions, "稍后设置", self.destroy, "quiet").pack(side="right", padx=8)
-        self.after_idle(lambda: center_on_parent(self, app, 620, 520))
+        self.bind("<Return>", lambda _event: self.finish())
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.after_idle(lambda: center_on_parent(self, app, 620, 590))
 
     def finish(self):
         index = self.adapter.current()
         account, password = self.account.get().strip(), self.password.get()
         if index < 0:
-            self.error.set("请先选择 GDUT 网络接口。")
+            self.error.set("请先选择网络接口。")
             return
         if not account:
             self.error.set("请输入校园网账号。")
@@ -395,9 +429,6 @@ class FirstRunDialog(tk.Toplevel):
             self.error.set("请输入校园网密码。")
             return
         adapter = self.adapters[index]
-        if not any("gdut" in value.casefold() for value in [adapter.name, *adapter.profile_names]):
-            self.error.set("所选接口名称、网络配置文件或 SSID 中没有 GDUT。")
-            return
         config = load_config()
         config.update(
             {
@@ -410,9 +441,9 @@ class FirstRunDialog(tk.Toplevel):
             save_config(config)
             add_or_update_account(account, password)
             self.password.set("")
-            if self.autostart.get():
-                set_autostart(True)
-                start_monitor()
+            set_autostart(self.autostart.get())
+            if not start_monitor():
+                raise RuntimeError("后台服务未能启动，请稍后在设置中重试。")
             self.destroy()
             self.app.reload_all()
             self.app.run_check(True)
@@ -439,11 +470,14 @@ class GDUTApp(tk.Tk):
         self._busy = False
         self._monitor_busy = False
         self._monitor_running = False
+        self._loading_settings = False
+        self._settings_apply_after: str | None = None
         self._update_info: UpdateInfo | None = None
         self.pages: dict[str, tk.Frame] = {}
         self.nav_buttons: dict[str, SidebarNavItem] = {}
         self._configure_style()
         self._build_shell()
+        self.protocol("WM_DELETE_WINDOW", self.close_window)
         self.show_page("overview")
         self.reload_all()
         self.after(1200, self.poll_status)
@@ -539,6 +573,7 @@ class GDUTApp(tk.Tk):
         elif key == "logs":
             self.refresh_logs()
         elif key == "settings":
+            self.refresh_settings_adapters(prefer_active=True)
             self.render_update_status(load_update_status())
 
     def page_header(self, page, title: str, subtitle: str):
@@ -651,6 +686,8 @@ class GDUTApp(tk.Tk):
         self.account_count = text_label(toolbar, "0 个账号", 9, color=MUTED)
         self.account_count.pack(side="left", pady=8)
         flat_button(toolbar, "添加账号", self.add_account, "primary").pack(side="right")
+        flat_button(toolbar, "导入账号", self.import_accounts).pack(side="right", padx=8)
+        flat_button(toolbar, "导出账号", self.export_accounts).pack(side="right")
         account_card = self.card(page, 0, 0)
         account_card.pack(fill="both", expand=True)
         self.account_list = ScrollablePanel(account_card)
@@ -689,8 +726,9 @@ class GDUTApp(tk.Tk):
         level.bind("<<ComboboxSelected>>", lambda _event: self.refresh_logs())
         days.bind("<<ComboboxSelected>>", lambda _event: self.refresh_logs())
         flat_button(filters, "刷新", self.refresh_logs).pack(side="left", padx=8)
+        flat_button(filters, "清空日志", self.clear_logs, "danger").pack(side="right")
         self.log_count = text_label(filters, "", 8, color=MUTED)
-        self.log_count.pack(side="right", pady=8)
+        self.log_count.pack(side="right", padx=(0, 10), pady=8)
 
         log_card = self.card(page, 0, 0)
         log_card.pack(fill="both", expand=True)
@@ -711,15 +749,20 @@ class GDUTApp(tk.Tk):
             font=("Microsoft YaHei UI", 9),
         )
         self.settings_feedback_label.pack(side="left", pady=8)
-        flat_button(actions, "保存设置", self.save_settings, "primary").pack(side="right")
-        flat_button(actions, "卸载", self.uninstall_app, "quiet").pack(side="right", padx=8)
-        scroll = ScrollablePanel(page, background=BG)
+        flat_button(actions, "卸载", self.uninstall_app, "quiet").pack(side="right")
+        scroll = ScrollablePanel(page, background=BG, show_scrollbar=False)
         scroll.pack(fill="both", expand=True)
         body = scroll.inner
 
         network = self.card(body)
         network.pack(fill="x", pady=(0, 12))
-        text_label(network, "GDUT 网络", 11, "bold").pack(anchor="w")
+        text_label(network, "网络接口", 11, "bold").pack(anchor="w")
+        text_label(
+            network,
+            "显示所有已连接的物理网卡；校园网通常使用 10.x.x.x 地址。",
+            8,
+            color=MUTED,
+        ).pack(anchor="w", pady=(3, 0))
         network_row = tk.Frame(network, bg=CARD)
         network_row.pack(fill="x", pady=(10, 0))
         self.adapter_combo = ttk.Combobox(
@@ -733,8 +776,6 @@ class GDUTApp(tk.Tk):
         ).pack(
             side="left", padx=(8, 0)
         )
-        self.keyword = tk.StringVar(value="gdut")
-
         monitor = self.card(body)
         monitor.pack(fill="x", pady=(0, 12))
         monitor_header = tk.Frame(monitor, bg=CARD)
@@ -823,46 +864,44 @@ class GDUTApp(tk.Tk):
         )
         self.install_button = flat_button(update, "下载并安装", self.download_and_install, "primary")
 
+        self.adapter_combo.bind("<<ComboboxSelected>>", self.schedule_settings_apply)
+        for variable in (
+            self.check_interval,
+            self.retry_interval,
+            self.login_cooldown,
+            self.notifications,
+            self.autostart,
+            self.auto_updates,
+            self.log_size,
+            self.log_retention,
+        ):
+            variable.trace_add("write", self.schedule_settings_apply)
+
 
     def fill_adapters(
         self, combo: ttk.Combobox, prefer_active: bool = False
     ) -> list[AdapterInfo]:
-        adapters = list_adapters()
+        config = load_config()
+        adapters = connected_physical_adapters(list_adapters())
         combo["values"] = [
             f"{item.name} · {', '.join(item.profile_names) or '未识别网络'} · "
             f"{', '.join(item.ipv4) or '无 IPv4'}"
             for item in adapters
         ]
         if adapters:
-            config = load_config()
             configured = str(config.get("adapter_mac", "")).replace("-", "").replace(":", "").upper()
-            keyword = str(config.get("network_keyword", "gdut")).casefold()
             selected = 0
-            if prefer_active:
-                active_matches = [
-                    index
-                    for index, adapter in enumerate(adapters)
-                    if adapter.status == "已连接"
-                    and adapter.ipv4
-                    and any(
-                        keyword in name.casefold()
-                        for name in [adapter.name, *adapter.profile_names]
-                    )
-                ]
-                if active_matches:
-                    selected = active_matches[0]
+            for index, adapter in enumerate(adapters):
+                mac = adapter.mac.replace("-", "").replace(":", "").upper()
+                if configured and mac == configured:
+                    selected = index
+                    break
             else:
-                for index, adapter in enumerate(adapters):
-                    mac = adapter.mac.replace("-", "").replace(":", "").upper()
-                    if (configured and mac == configured) or (
-                        not configured
-                        and any(
-                            keyword in name.casefold()
-                            for name in [adapter.name, *adapter.profile_names]
-                        )
-                    ):
-                        selected = index
-                        break
+                if prefer_active or not configured:
+                    for index, adapter in enumerate(adapters):
+                        if any(ip.startswith("10.") for ip in adapter.ipv4):
+                            selected = index
+                            break
             combo.current(selected)
         else:
             combo.set("")
@@ -873,14 +912,16 @@ class GDUTApp(tk.Tk):
         selected = self.adapter_combo.current()
         if 0 <= selected < len(self.adapters):
             adapter = self.adapters[selected]
-            network_name = next(
-                (name for name in adapter.profile_names if "gdut" in name.casefold()),
-                adapter.name,
-            )
+            network_name = next(iter(adapter.profile_names), adapter.name)
             self.settings_feedback.set(f"已刷新并选中 {network_name}")
         else:
-            self.settings_feedback.set("未发现可用网络")
+            self.settings_feedback.set("当前没有已连接的物理网卡")
         self.settings_feedback_label.configure(fg=MUTED)
+        if prefer_active and 0 <= selected < len(self.adapters):
+            selected_mac = self.adapters[selected].mac.replace("-", "").replace(":", "").upper()
+            configured_mac = str(load_config().get("adapter_mac", "")).replace("-", "").replace(":", "").upper()
+            if selected_mac != configured_mac:
+                self.schedule_settings_apply()
 
     def reload_all(self):
         self.refresh_accounts()
@@ -949,6 +990,54 @@ class GDUTApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("保存失败", str(exc), parent=self)
 
+    def export_accounts(self):
+        if not load_accounts():
+            messagebox.showinfo("导出账号", "当前没有可导出的账号。", parent=self)
+            return
+        if not messagebox.askyesno(
+            "导出账号",
+            "导出的 JSON 文件包含明文账号和密码，仅应分享给可信的人。\n\n是否继续？",
+            parent=self,
+        ):
+            return
+        destination = filedialog.asksaveasfilename(
+            parent=self,
+            title="导出账号",
+            defaultextension=".json",
+            initialfile=datetime.now().strftime("GDUT-accounts-%Y%m%d-%H%M%S.json"),
+            filetypes=(("JSON 账号文件", "*.json"),),
+        )
+        if not destination:
+            return
+        try:
+            count = export_accounts_file(Path(destination))
+            messagebox.showinfo(
+                "导出完成",
+                f"已导出 {count} 个账号。",
+                parent=self,
+            )
+        except Exception as exc:
+            messagebox.showerror("导出失败", str(exc), parent=self)
+
+    def import_accounts(self):
+        source = filedialog.askopenfilename(
+            parent=self,
+            title="导入账号",
+            filetypes=(("JSON 账号文件", "*.json"),),
+        )
+        if not source:
+            return
+        try:
+            added, updated = import_accounts_file(Path(source))
+            self.refresh_accounts()
+            messagebox.showinfo(
+                "导入完成",
+                f"新增 {added} 个账号，更新 {updated} 个同名账号。",
+                parent=self,
+            )
+        except Exception as exc:
+            messagebox.showerror("导入失败", str(exc), parent=self)
+
     def open_account_editor(self, original_account: str):
         dialog = AccountDialog(self, original_account)
         self.wait_window(dialog)
@@ -968,39 +1057,60 @@ class GDUTApp(tk.Tk):
             self.refresh_accounts()
 
     def load_settings(self):
-        config = load_config()
-        self.check_interval.set(int(config.get("check_interval_seconds", 30)))
-        self.retry_interval.set(int(config.get("retry_interval_seconds", 15)))
-        self.login_cooldown.set(int(config.get("login_cooldown_seconds", 60)))
-        self.notifications.set(bool(config.get("notifications_enabled", True)))
-        self.autostart.set(bool(config.get("autostart_enabled", True)))
-        self.auto_updates.set(bool(config.get("auto_check_updates", True)))
-        self.keyword.set(str(config.get("network_keyword", "gdut")))
-        self.log_size.set(f"{int(config.get('log_max_mb', 20))} MB")
-        days = int(config.get("log_retention_days", 0))
-        self.log_retention.set("全部" if not days else f"{days} 天")
-        self.refresh_settings_adapters()
-        self.settings_feedback.set("")
-
-    def save_settings(self):
-        index = self.adapter_combo.current()
-        if index < 0 or index >= len(self.adapters):
-            self.settings_feedback.set("请先选择 GDUT 网络")
-            self.settings_feedback_label.configure(fg=DANGER)
-            return
-        adapter = self.adapters[index]
-        keyword = self.keyword.get().strip() or "gdut"
-        if not any(keyword.casefold() in name.casefold() for name in [adapter.name, *adapter.profile_names]):
-            self.settings_feedback.set("所选网络不包含 gdut 标识")
-            self.settings_feedback_label.configure(fg=DANGER)
-            return
+        self._loading_settings = True
         try:
             config = load_config()
+            self.check_interval.set(int(config.get("check_interval_seconds", 30)))
+            self.retry_interval.set(int(config.get("retry_interval_seconds", 15)))
+            self.login_cooldown.set(int(config.get("login_cooldown_seconds", 60)))
+            self.notifications.set(bool(config.get("notifications_enabled", True)))
+            self.autostart.set(bool(config.get("autostart_enabled", True)))
+            self.auto_updates.set(bool(config.get("auto_check_updates", True)))
+            self.log_size.set(f"{int(config.get('log_max_mb', 20))} MB")
+            days = int(config.get("log_retention_days", 0))
+            self.log_retention.set("全部" if not days else f"{days} 天")
+            self.refresh_settings_adapters(prefer_active=True)
+        finally:
+            self._loading_settings = False
+        selected = self.adapter_combo.current()
+        if 0 <= selected < len(self.adapters):
+            selected_mac = self.adapters[selected].mac.replace("-", "").replace(":", "").upper()
+            configured_mac = str(config.get("adapter_mac", "")).replace("-", "").replace(":", "").upper()
+            if selected_mac != configured_mac:
+                self.schedule_settings_apply()
+        self.settings_feedback.set("修改后自动保存")
+        self.settings_feedback_label.configure(fg=MUTED)
+
+    def schedule_settings_apply(self, *_args):
+        if self._loading_settings:
+            return
+        if self._settings_apply_after:
+            try:
+                self.after_cancel(self._settings_apply_after)
+            except tk.TclError:
+                pass
+        self.settings_feedback.set("正在自动保存……")
+        self.settings_feedback_label.configure(fg=MUTED)
+        self._settings_apply_after = self.after(450, self.apply_settings)
+
+    def apply_settings(self):
+        self._settings_apply_after = None
+        index = self.adapter_combo.current()
+        config = load_config()
+        try:
+            previous_autostart = bool(config.get("autostart_enabled", True))
+            previous_log_size = int(config.get("log_max_mb", 20))
+            previous_log_retention = int(config.get("log_retention_days", 0))
+            if 0 <= index < len(self.adapters):
+                adapter = self.adapters[index]
+                config.update(
+                    {
+                        "adapter_name": adapter.name,
+                        "adapter_mac": adapter.mac,
+                    }
+                )
             config.update(
                 {
-                    "adapter_name": adapter.name,
-                    "adapter_mac": adapter.mac,
-                    "network_keyword": keyword,
                     "check_interval_seconds": max(5, int(self.check_interval.get())),
                     "retry_interval_seconds": max(5, int(self.retry_interval.get())),
                     "login_cooldown_seconds": max(15, int(self.login_cooldown.get())),
@@ -1014,16 +1124,36 @@ class GDUTApp(tk.Tk):
                 }
             )
             save_config(config)
-            set_autostart(self.autostart.get())
-            if self.autostart.get():
-                start_monitor()
-            self.database.maintain(config["log_max_mb"], config["log_retention_days"])
-            self.settings_feedback.set("设置已保存")
+            if previous_autostart != self.autostart.get():
+                set_autostart(self.autostart.get())
+                if self.autostart.get():
+                    start_monitor()
+            if (
+                previous_log_size != config["log_max_mb"]
+                or previous_log_retention != config["log_retention_days"]
+            ):
+                self.database.maintain(config["log_max_mb"], config["log_retention_days"])
+            self.settings_feedback.set("设置已自动保存")
             self.settings_feedback_label.configure(fg=SUCCESS)
-            self.after(2500, lambda: self.settings_feedback.set(""))
+            self.after(1800, self.reset_settings_feedback)
         except Exception as exc:
-            self.settings_feedback.set(f"保存失败：{exc}")
+            self.settings_feedback.set(f"自动保存失败：{exc}")
             self.settings_feedback_label.configure(fg=DANGER)
+
+    def reset_settings_feedback(self):
+        if not self._monitor_busy:
+            self.settings_feedback.set("修改后自动保存")
+            self.settings_feedback_label.configure(fg=MUTED)
+
+    def close_window(self):
+        if self._settings_apply_after:
+            try:
+                self.after_cancel(self._settings_apply_after)
+            except tk.TclError:
+                pass
+            self._settings_apply_after = None
+            self.apply_settings()
+        self.destroy()
 
     def update_monitor_controls(self, running: bool):
         self._monitor_running = running
@@ -1044,7 +1174,7 @@ class GDUTApp(tk.Tk):
         )
         self.restart_monitor_button.configure(state="normal")
         self.monitor_state_label.configure(
-            text="后台服务正在运行" if running else "后台服务已停止",
+            text="后台服务正在运行 · 关闭窗口不受影响" if running else "后台服务已停止",
             fg=SUCCESS if running else MUTED,
         )
 
@@ -1085,7 +1215,7 @@ class GDUTApp(tk.Tk):
             messages = {"start": "后台服务已启动", "stop": "后台服务已停止", "restart": "后台服务已重启"}
             self.settings_feedback.set(messages[action])
             self.settings_feedback_label.configure(fg=SUCCESS)
-            self.after(2500, lambda: self.settings_feedback.set(""))
+            self.after(2500, self.reset_settings_feedback)
         status = load_status()
         status["monitor_running"] = running
         self.update_status_display(status)
@@ -1095,6 +1225,19 @@ class GDUTApp(tk.Tk):
         day_map = {"今天": 1, "最近 7 天": 7, "最近 30 天": 30, "全部时间": 0}
         level = "" if self.log_level.get() == "全部级别" else self.log_level.get()
         return day_map.get(self.log_days.get(), 7), level
+
+    def clear_logs(self):
+        if not messagebox.askyesno(
+            "清空日志",
+            "确定清空全部日志吗？此操作不会影响账号、设置或后台检测。",
+            parent=self,
+        ):
+            return
+        try:
+            self.database.clear()
+            self.refresh_logs()
+        except Exception as exc:
+            messagebox.showerror("清空失败", str(exc), parent=self)
 
     def refresh_logs(self):
         if not hasattr(self, "log_list"):
@@ -1201,7 +1344,7 @@ class GDUTApp(tk.Tk):
         state_text = status.get("state_text") or "尚未检查"
         self.status_var.set(state_text)
         self.status_dot.configure(fg=color)
-        self.status_hint.configure(text=status.get("network_profile") or "等待连接 GDUT 网络")
+        self.status_hint.configure(text=status.get("network_profile") or "等待所选网络接口连接")
         self.sidebar_status.configure(text=f"●  {state_text}", fg=color)
         monitor_running = bool(status.get("monitor_running"))
         self.stat_vars["monitor"].set("正在运行" if monitor_running else "未运行")

@@ -7,7 +7,7 @@ import sys
 
 APP_NAME = "GDUT 校园网自动登录"
 APP_ID = "GDUTAutoLogin"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 TASK_NAME = "GDUT Auto Login"
 MUTEX_MONITOR = "Local\\GDUT_AutoLogin_Monitor_V2"
 MUTEX_ACTION = "Local\\GDUT_AutoLogin_Action_V2"
@@ -22,7 +22,7 @@ START_MENU_DIR = Path(os.environ.get("APPDATA", DATA_DIR)) / "Microsoft" / "Wind
 START_MENU_SHORTCUT = START_MENU_DIR / "GDUT 校园网自动登录.lnk"
 
 CONFIG_PATH = DATA_DIR / "config.json"
-ACCOUNTS_PATH = DATA_DIR / "accounts.dat"
+ACCOUNTS_PATH = DATA_DIR / "accounts.json"
 STATE_PATH = DATA_DIR / "state.json"
 STATUS_PATH = DATA_DIR / "status.json"
 PID_PATH = DATA_DIR / "monitor.pid"
@@ -37,7 +37,6 @@ DEFAULT_CONFIG = {
     "schema_version": 1,
     "adapter_name": "",
     "adapter_mac": "",
-    "network_keyword": "gdut",
     "ip_prefixes": ["10."],
     "portal_host": "10.0.3.2",
     "portal_port": 801,

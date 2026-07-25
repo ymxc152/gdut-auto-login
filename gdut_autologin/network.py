@@ -158,39 +158,50 @@ def list_adapters() -> list[AdapterInfo]:
     return sorted(adapters, key=lambda item: (not item.physical, item.name.lower()))
 
 
-def adapter_matches_keyword(adapter: AdapterInfo, keyword: str) -> bool:
-    folded = keyword.strip().casefold()
-    if not folded:
-        return False
-    values = [adapter.name, *adapter.profile_names]
-    return any(folded in str(value).casefold() for value in values)
+def connected_physical_adapters(adapters: list[AdapterInfo]) -> list[AdapterInfo]:
+    connected = [
+        item
+        for item in adapters
+        if item.physical
+        and item.status == "已连接"
+    ]
+    return sorted(
+        connected,
+        key=lambda item: (
+            not any(ip.startswith("10.") for ip in item.ipv4),
+            item.name.casefold(),
+        ),
+    )
 
 
 def select_adapter(config: dict) -> AdapterInfo | None:
     adapters = list_adapters()
-    keyword = str(config.get("network_keyword", "gdut")) or "gdut"
-    matching = [item for item in adapters if adapter_matches_keyword(item, keyword)]
-    if not matching:
+    physical = [item for item in adapters if item.physical]
+    if not physical:
         return None
     configured_mac = normalize_mac(config.get("adapter_mac", ""))
     configured_name = str(config.get("adapter_name", "")).strip()
-    if configured_mac:
-        selected = next((item for item in matching if normalize_mac(item.mac) == configured_mac), None)
-        if selected:
-            return selected
-    if configured_name:
-        selected = next((item for item in matching if item.name.casefold() == configured_name.casefold()), None)
-        if selected:
-            return selected
     prefixes = tuple(config.get("ip_prefixes") or ["10."])
-    candidates = [
-        item
-        for item in matching
-        if item.status == "已连接" and any(ip.startswith(prefixes) for ip in item.ipv4)
+    configured_adapter = None
+    if configured_mac:
+        configured_adapter = next(
+            (item for item in physical if normalize_mac(item.mac) == configured_mac), None
+        )
+    if configured_adapter is None and configured_name:
+        configured_adapter = next(
+            (item for item in physical if item.name.casefold() == configured_name.casefold()), None
+        )
+    if configured_adapter and configured_adapter.status == "已连接":
+        return configured_adapter
+    connected = [item for item in physical if item.status == "已连接"]
+    preferred = [
+        item for item in connected if any(ip.startswith(prefixes) for ip in item.ipv4)
     ]
-    if len(candidates) == 1:
-        return candidates[0]
-    return matching[0] if len(matching) == 1 else None
+    if len(preferred) == 1:
+        return preferred[0]
+    if len(connected) == 1:
+        return connected[0]
+    return configured_adapter
 
 
 def adapter_source_ip(adapter: AdapterInfo, config: dict) -> str:
