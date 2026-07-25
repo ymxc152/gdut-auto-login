@@ -8,7 +8,7 @@
 
 ## 下载和安装
 
-1. 从项目 Releases 下载 `GDUTAutoLogin-1.0.0-win64.exe`。
+1. 从项目 Releases 下载 `GDUTAutoLogin-1.1.0-win64.exe`。
 2. 双击 EXE。
 3. 程序会自动安装到当前用户目录，不需要管理员权限。
 4. 首次打开时，在中文界面选择名称、网络配置文件或无线 SSID 包含 `GDUT` 的接口。
@@ -37,6 +37,8 @@
 目标用户电脑不需要安装 Python、pip、psutil 或其他第三方组件。
 
 ## 图形界面
+
+v1.1.0 使用现代化侧边栏布局，提供“概览、连接、账号、日志、更新、设置”六个页面。概览集中展示网络状态和最近活动；连接页面明确显示实际 GDUT 网络配置文件、接口、MAC 与绑定源 IP。
 
 ### 概览
 
@@ -67,7 +69,7 @@
 
 账号与密码整体使用 Windows DPAPI 加密。加密文件只能由创建它的 Windows 用户在原电脑上解密。
 
-### 网络与设置
+### 连接与设置
 
 可以设置：
 
@@ -103,16 +105,6 @@
 
 日志不会记录密码，账号会被脱敏。
 
-### 关于
-
-显示：
-
-- 应用版本；
-- 本机数据目录；
-- 安全说明；
-- 完整 MIT License；
-- 卸载入口。
-
 ## 后台运行方式
 
 同一个 EXE 有两个角色：
@@ -147,15 +139,18 @@ Windows 开机任务
 
 ## 更新
 
-下载新版本 EXE 后直接双击即可：
+后台服务默认每天检查一次项目 GitHub Release。发现新版后只发送通知，不会在用户不知情时安装。
 
-1. 新版本停止旧后台任务；
-2. 替换用户程序目录中的旧 EXE；
-3. 保留账号、设置、状态和日志；
-4. 重新建立开机任务；
-5. 启动新版本后台监控。
+在“更新”页面可完成：
 
-当前版本没有启用联网自动更新。公开项目在没有稳定发布地址、HTTPS 校验和代码签名之前，不应自动下载并执行新程序。
+1. 检查最新稳定版本和发布说明；
+2. 从项目 GitHub Release 下载对应 EXE 与 `SHA256SUMS.txt`；
+3. 校验下载大小和 SHA-256，失败时拒绝执行；
+4. 用户明确确认后停止旧后台任务并备份旧 EXE；
+5. 替换程序，启动新版并等待健康自检；
+6. 新版启动失败或超时则恢复备份并重新打开旧版。
+
+账号、配置和日志都位于独立的数据目录，更新不会覆盖个人数据。当前发行版没有 Authenticode 证书，因此更新器不会静默安装未知新版；Windows 仍可能显示 SmartScreen“未知发布者”。
 
 ## 卸载
 
@@ -201,7 +196,7 @@ Windows 开机任务
 示例签名命令：
 
 ```powershell
-signtool sign /fd SHA256 /td SHA256 /tr https://timestamp.example.com /a .\GDUTAutoLogin-1.0.0-win64.exe
+signtool sign /fd SHA256 /td SHA256 /tr https://timestamp.example.com /a .\GDUTAutoLogin-1.1.0-win64.exe
 ```
 
 仓库不会包含私钥或证书密码。代码签名证书必须由发布者自行安全保管。
@@ -211,7 +206,7 @@ signtool sign /fd SHA256 /td SHA256 /tr https://timestamp.example.com /a .\GDUTA
 Release 同时提供 `SHA256SUMS.txt`。用户可以执行：
 
 ```powershell
-Get-FileHash .\GDUTAutoLogin-1.0.0-win64.exe -Algorithm SHA256
+Get-FileHash .\GDUTAutoLogin-1.1.0-win64.exe -Algorithm SHA256
 ```
 
 结果应与 `SHA256SUMS.txt` 完全一致。
@@ -242,7 +237,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 输出位置：
 
 ```text
-release/GDUTAutoLogin-1.0.0-win64.exe
+release/GDUTAutoLogin-1.1.0-win64.exe
 release/SHA256SUMS.txt
 ```
 
@@ -256,7 +251,7 @@ python app.py --self-test .\self-test.json
 打包后的 EXE 还支持发布自检参数：
 
 ```powershell
-.\GDUTAutoLogin-1.0.0-win64.exe --self-test .\self-test.json
+.\GDUTAutoLogin-1.1.0-win64.exe --self-test .\self-test.json
 ```
 
 自检会验证冻结运行环境、配置数据库、psutil 网卡枚举和应用模块加载，不会自动提交任何个人数据。
@@ -283,7 +278,6 @@ python app.py --self-test .\self-test.json
 
 尚未启用的功能：
 
-- 自动联网更新；
 - 云端同步账号；
 - 跨电脑迁移 DPAPI 凭据；
 - macOS/Linux 支持；

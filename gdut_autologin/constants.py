@@ -7,7 +7,7 @@ import sys
 
 APP_NAME = "GDUT 校园网自动登录"
 APP_ID = "GDUTAutoLogin"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 TASK_NAME = "GDUT Auto Login"
 MUTEX_MONITOR = "Local\\GDUT_AutoLogin_Monitor_V2"
 MUTEX_ACTION = "Local\\GDUT_AutoLogin_Action_V2"
@@ -27,6 +27,11 @@ STATE_PATH = DATA_DIR / "state.json"
 STATUS_PATH = DATA_DIR / "status.json"
 PID_PATH = DATA_DIR / "monitor.pid"
 DATABASE_PATH = DATA_DIR / "events.db"
+UPDATE_DIR = DATA_DIR / "updates"
+UPDATE_STATUS_PATH = UPDATE_DIR / "update-status.json"
+GITHUB_REPO = "ymxc152/gdut-auto-login"
+GITHUB_RELEASES_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
 
 DEFAULT_CONFIG = {
     "schema_version": 1,
@@ -46,6 +51,9 @@ DEFAULT_CONFIG = {
     "autostart_enabled": True,
     "log_max_mb": 20,
     "log_retention_days": 0,
+    "auto_check_updates": True,
+    "auto_download_updates": False,
+    "update_channel": "stable",
 }
 
 

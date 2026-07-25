@@ -12,6 +12,7 @@ from gdut_autologin.network import (
     select_adapter,
 )
 from gdut_autologin.storage import EventDatabase, mask_account, ordered_accounts
+from gdut_autologin.updates import UpdateInfo, _expected_hash, _replace_with_retry, version_tuple
 
 
 class NetworkCoreTests(unittest.TestCase):
@@ -110,6 +111,33 @@ class EventDatabaseTests(unittest.TestCase):
 
             database.clear()
             self.assertEqual(database.query(), [])
+
+
+class UpdateCoreTests(unittest.TestCase):
+    def test_semantic_version_comparison(self):
+        self.assertGreater(version_tuple("v1.10.0"), version_tuple("1.9.9"))
+        self.assertEqual(version_tuple("release-1.1.0"), (1, 1, 0))
+
+    def test_checksum_parser_requires_matching_asset(self):
+        digest = "a" * 64
+        text = f"{digest}  GDUTAutoLogin-1.1.0-win64.exe\n"
+        self.assertEqual(_expected_hash(text, "GDUTAutoLogin-1.1.0-win64.exe"), digest)
+        with self.assertRaises(RuntimeError):
+            _expected_hash(text, "different.exe")
+
+    def test_update_info_defaults_to_current_version(self):
+        info = UpdateInfo()
+        self.assertFalse(info.available)
+        self.assertEqual(info.current_version, "1.1.0")
+
+    def test_replace_with_retry_replaces_existing_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, target = root / "new.exe", root / "current.exe"
+            source.write_bytes(b"new")
+            target.write_bytes(b"old")
+            _replace_with_retry(source, target)
+            self.assertEqual(target.read_bytes(), b"new")
 
 
 if __name__ == "__main__":

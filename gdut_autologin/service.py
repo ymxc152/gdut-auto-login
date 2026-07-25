@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import os
 import time
 
-from .constants import MUTEX_MONITOR, PID_PATH
+from .constants import MUTEX_MONITOR, PID_PATH, UPDATE_CHECK_INTERVAL_SECONDS
 from .network import adapter_source_ip, probe_network, select_adapter, try_authorized_accounts
 from .storage import (
     build_logger,
@@ -14,6 +14,7 @@ from .storage import (
     save_status,
 )
 from .windows import NamedMutex, action_mutex, show_notification
+from .updates import check_latest_release
 
 
 STATUS_TEXT = {
@@ -131,12 +132,31 @@ def run_monitor() -> int:
         PID_PATH.write_text(str(os.getpid()), encoding="ascii")
         logger.info("后台网络监控已启动")
         last_notification = 0.0
+        last_update_check = 0.0
+        notified_update_version = ""
         maintenance_counter = 0
         try:
             while True:
                 config = load_config()
                 status = perform_check(login_if_needed=True, monitor_running=True)
                 now = time.monotonic()
+                if (
+                    config.get("auto_check_updates", True)
+                    and now - last_update_check >= UPDATE_CHECK_INTERVAL_SECONDS
+                ):
+                    last_update_check = now
+                    update = check_latest_release()
+                    if (
+                        update.available
+                        and not update.error
+                        and update.latest_version != notified_update_version
+                        and config.get("notifications_enabled", True)
+                    ):
+                        notified_update_version = update.latest_version
+                        show_notification(
+                            "GDUT 自动登录有新版本",
+                            f"版本 {update.latest_version} 已发布。打开管理界面确认下载并安装。",
+                        )
                 if (
                     status.get("state") == "login_failed"
                     and config.get("notifications_enabled", True)

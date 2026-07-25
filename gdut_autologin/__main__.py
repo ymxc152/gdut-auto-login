@@ -11,6 +11,7 @@ from .network import list_adapters
 from .service import perform_check, run_monitor
 from .storage import EventDatabase, load_accounts, load_config, migrate_legacy_data
 from .windows import self_install_if_needed
+from .updates import apply_update
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,6 +22,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--check-once", action="store_true")
     parser.add_argument("--self-test", type=Path)
     parser.add_argument("--no-self-install", action="store_true")
+    parser.add_argument("--apply-update", action="store_true")
+    parser.add_argument("--post-update", action="store_true")
+    parser.add_argument("--target", type=Path)
+    parser.add_argument("--wait-pid", type=int, default=0)
+    parser.add_argument("--health-file", type=Path)
     return parser.parse_args()
 
 
@@ -48,6 +54,10 @@ def self_test(destination: Path) -> int:
 def main() -> int:
     args = parse_args()
     ensure_data_dir()
+    if args.apply_update:
+        if not args.target or not args.wait_pid or not args.health_file:
+            return 2
+        return apply_update(args.target, args.wait_pid, args.health_file)
     if args.migrate_from:
         migrate_legacy_data(args.migrate_from.resolve())
     if args.self_test:
@@ -61,6 +71,11 @@ def main() -> int:
         if self_install_if_needed():
             return 0
     app = GDUTApp(first_run=args.first_run)
+    if args.post_update and args.health_file:
+        args.health_file.parent.mkdir(parents=True, exist_ok=True)
+        args.health_file.write_text(
+            json.dumps({"ok": True, "version": APP_VERSION}), encoding="utf-8"
+        )
     app.mainloop()
     return 0
 
