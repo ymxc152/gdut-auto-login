@@ -148,6 +148,30 @@ def add_or_update_account(account: str, password: str) -> bool:
     return True
 
 
+def edit_account(original_account: str, account: str, password: str = "") -> bool:
+    """Edit an existing account while preserving its position and password when left blank."""
+    accounts = load_accounts()
+    index = next(
+        (position for position, item in enumerate(accounts) if item["account"] == original_account),
+        -1,
+    )
+    if index < 0:
+        return False
+    if account != original_account and any(item["account"] == account for item in accounts):
+        raise ValueError("该账号已经存在。")
+    previous = accounts[index]
+    accounts[index] = {
+        "account": account,
+        "password": password or previous["password"],
+    }
+    save_accounts(accounts)
+    state = load_state()
+    if state.get("last_success_account") == original_account:
+        state["last_success_account"] = account
+        save_state(state)
+    return True
+
+
 def remove_account(account: str) -> bool:
     accounts = load_accounts()
     remaining = [item for item in accounts if item["account"] != account]

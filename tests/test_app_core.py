@@ -11,7 +11,7 @@ from gdut_autologin.network import (
     parse_login_success,
     select_adapter,
 )
-from gdut_autologin.storage import EventDatabase, mask_account, ordered_accounts
+from gdut_autologin.storage import EventDatabase, edit_account, mask_account, ordered_accounts
 from gdut_autologin.updates import UpdateInfo, _expected_hash, _replace_with_retry, version_tuple
 
 
@@ -93,6 +93,20 @@ class AccountOrderTests(unittest.TestCase):
     def test_mask_account(self):
         self.assertEqual(mask_account("1234567890"), "12******90")
 
+    @patch("gdut_autologin.storage.save_state")
+    @patch("gdut_autologin.storage.load_state", return_value={"last_success_account": "old"})
+    @patch("gdut_autologin.storage.save_accounts")
+    @patch(
+        "gdut_autologin.storage.load_accounts",
+        return_value=[{"account": "old", "password": "secret"}],
+    )
+    def test_edit_account_keeps_password_when_blank(
+        self, _load_accounts, save_accounts, _load_state, save_state
+    ):
+        self.assertTrue(edit_account("old", "new", ""))
+        save_accounts.assert_called_once_with([{"account": "new", "password": "secret"}])
+        save_state.assert_called_once_with({"last_success_account": "new"})
+
 
 class EventDatabaseTests(unittest.TestCase):
     def test_add_query_export_and_clear(self):
@@ -120,15 +134,15 @@ class UpdateCoreTests(unittest.TestCase):
 
     def test_checksum_parser_requires_matching_asset(self):
         digest = "a" * 64
-        text = f"{digest}  GDUTAutoLogin-1.1.0-win64.exe\n"
-        self.assertEqual(_expected_hash(text, "GDUTAutoLogin-1.1.0-win64.exe"), digest)
+        text = f"{digest}  GDUTAutoLogin-1.1.1-win64.exe\n"
+        self.assertEqual(_expected_hash(text, "GDUTAutoLogin-1.1.1-win64.exe"), digest)
         with self.assertRaises(RuntimeError):
             _expected_hash(text, "different.exe")
 
     def test_update_info_defaults_to_current_version(self):
         info = UpdateInfo()
         self.assertFalse(info.available)
-        self.assertEqual(info.current_version, "1.1.0")
+        self.assertEqual(info.current_version, "1.1.1")
 
     def test_replace_with_retry_replaces_existing_file(self):
         with tempfile.TemporaryDirectory() as temporary:

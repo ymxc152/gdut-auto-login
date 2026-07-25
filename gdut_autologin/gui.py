@@ -4,15 +4,15 @@ from datetime import datetime
 from pathlib import Path
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-import webbrowser
+from tkinter import messagebox, ttk
 
-from .constants import APP_NAME, APP_VERSION, DATABASE_PATH
+from .constants import APP_NAME, APP_VERSION
 from .network import AdapterInfo, list_adapters
 from .service import perform_check
 from .storage import (
     EventDatabase,
     add_or_update_account,
+    edit_account,
     load_accounts,
     load_config,
     load_state,
@@ -31,22 +31,31 @@ from .updates import (
 from .windows import schedule_self_removal, set_autostart, start_monitor, stop_monitor
 
 
-BG = "#F4F7FB"
-SIDEBAR = "#101828"
-SIDEBAR_ACTIVE = "#1D2939"
+BG = "#F5F7FA"
+SIDEBAR = "#172033"
+SIDEBAR_ACTIVE = "#2B3954"
 CARD = "#FFFFFF"
-TEXT = "#101828"
-MUTED = "#667085"
-PRIMARY = "#2563EB"
-SUCCESS = "#12B76A"
-WARNING = "#F79009"
-DANGER = "#F04438"
-BORDER = "#E4E7EC"
+TEXT = "#172033"
+MUTED = "#697386"
+PRIMARY = "#3B6FF5"
+PRIMARY_HOVER = "#2F5FD7"
+SOFT_BLUE = "#EEF3FF"
+SUCCESS = "#1C9B67"
+WARNING = "#D97706"
+DANGER = "#D94A4A"
+BORDER = "#E5EAF1"
 
 STATUS_COLORS = {
-    "online": SUCCESS, "portal_required": WARNING, "network_error": DANGER,
-    "unexpected_response": DANGER, "adapter_missing": MUTED, "adapter_down": MUTED,
-    "no_ip": WARNING, "login_failed": DANGER, "busy": PRIMARY, "unknown": MUTED,
+    "online": SUCCESS,
+    "portal_required": WARNING,
+    "network_error": DANGER,
+    "unexpected_response": DANGER,
+    "adapter_missing": MUTED,
+    "adapter_down": MUTED,
+    "no_ip": WARNING,
+    "login_failed": DANGER,
+    "busy": PRIMARY,
+    "unknown": MUTED,
 }
 
 
@@ -59,41 +68,205 @@ def local_time(value: str) -> str:
         return value
 
 
-def label(parent, text="", size=10, weight="normal", color=TEXT, **kwargs):
-    return tk.Label(parent, text=text, font=("Microsoft YaHei UI", size, weight), fg=color,
-                    bg=parent.cget("bg"), **kwargs)
+def text_label(parent, text="", size=10, weight="normal", color=TEXT, **kwargs):
+    return tk.Label(
+        parent,
+        text=text,
+        font=("Microsoft YaHei UI", size, weight),
+        fg=color,
+        bg=parent.cget("bg"),
+        **kwargs,
+    )
+
+
+def flat_button(parent, text, command, kind="secondary", width=None):
+    palette = {
+        "primary": (PRIMARY, "white", PRIMARY_HOVER),
+        "secondary": ("#EEF1F6", TEXT, "#E2E7EF"),
+        "quiet": (parent.cget("bg"), MUTED, "#EEF1F6"),
+        "danger": ("#FFF0F0", DANGER, "#FFE1E1"),
+    }
+    background, foreground, active = palette[kind]
+    return tk.Button(
+        parent,
+        text=text,
+        command=command,
+        width=width,
+        bg=background,
+        fg=foreground,
+        activebackground=active,
+        activeforeground=foreground,
+        disabledforeground="#A5ADBA",
+        relief="flat",
+        borderwidth=0,
+        cursor="hand2",
+        padx=14,
+        pady=8,
+        font=("Microsoft YaHei UI", 9, "bold" if kind == "primary" else "normal"),
+    )
+
+
+def modern_entry(parent, variable, show="", width=None):
+    return tk.Entry(
+        parent,
+        textvariable=variable,
+        show=show,
+        width=width,
+        relief="flat",
+        borderwidth=0,
+        highlightthickness=1,
+        highlightbackground=BORDER,
+        highlightcolor=PRIMARY,
+        bg="white",
+        fg=TEXT,
+        insertbackground=TEXT,
+        font=("Microsoft YaHei UI", 10),
+    )
+
+
+def check_box(parent, text, variable):
+    return tk.Checkbutton(
+        parent,
+        text=text,
+        variable=variable,
+        bg=parent.cget("bg"),
+        fg=TEXT,
+        activebackground=parent.cget("bg"),
+        activeforeground=TEXT,
+        selectcolor=parent.cget("bg"),
+        highlightthickness=0,
+        borderwidth=0,
+        font=("Microsoft YaHei UI", 9),
+    )
+
+
+def center_on_parent(
+    window: tk.Toplevel, parent: tk.Misc, width: int | None = None, height: int | None = None
+) -> None:
+    window.update_idletasks()
+    width = width or max(window.winfo_width(), window.winfo_reqwidth())
+    height = height or max(window.winfo_height(), window.winfo_reqheight())
+    x = parent.winfo_rootx() + max(0, (parent.winfo_width() - width) // 2)
+    y = parent.winfo_rooty() + max(0, (parent.winfo_height() - height) // 2)
+    window.geometry(f"{width}x{height}+{x}+{y}")
+
+
+class ScrollablePanel(tk.Frame):
+    def __init__(self, parent, background=CARD):
+        super().__init__(parent, bg=background)
+        self.canvas = tk.Canvas(self, bg=background, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(
+            self, orient="vertical", command=self.canvas.yview, style="Modern.Vertical.TScrollbar"
+        )
+        self.inner = tk.Frame(self.canvas, bg=background)
+        self.window_id = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.inner.bind(
+            "<Configure>", self._content_changed
+        )
+        self.canvas.bind("<Configure>", self._canvas_changed)
+        self.canvas.bind("<MouseWheel>", self._wheel)
+        self.inner.bind("<MouseWheel>", self._wheel)
+
+    def _wheel(self, event):
+        self.canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    def _content_changed(self, _event=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.after_idle(self._update_scrollbar)
+
+    def _canvas_changed(self, event):
+        self.canvas.itemconfigure(self.window_id, width=event.width)
+        self.after_idle(self._update_scrollbar)
+
+    def _update_scrollbar(self):
+        if self.inner.winfo_reqheight() > self.canvas.winfo_height() + 2:
+            if not self.scrollbar.winfo_ismapped():
+                self.scrollbar.pack(side="right", fill="y")
+        elif self.scrollbar.winfo_ismapped():
+            self.scrollbar.pack_forget()
+
+    def clear(self):
+        for child in self.inner.winfo_children():
+            child.destroy()
 
 
 class AccountDialog(tk.Toplevel):
-    def __init__(self, parent):
+    def __init__(self, parent, original_account: str = ""):
         super().__init__(parent)
-        self.result = None
-        self.title("添加或更新账号")
-        self.geometry("450x285")
+        self.original_account = original_account
+        self.result: tuple[str, str] | None = None
+        self.title("编辑账号" if original_account else "添加账号")
+        self.geometry("470x380")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
         self.configure(bg=CARD)
-        body = tk.Frame(self, bg=CARD, padx=28, pady=24)
+
+        body = tk.Frame(self, bg=CARD, padx=32, pady=28)
         body.pack(fill="both", expand=True)
-        label(body, "添加授权账号", 17, "bold").pack(anchor="w")
-        label(body, "信息仅保存在当前 Windows 用户的 DPAPI 加密文件中。", 9, color=MUTED,
-              wraplength=390, justify="left").pack(anchor="w", pady=(5, 18))
-        self.account = tk.StringVar()
+        text_label(body, "编辑账号" if original_account else "添加校园网账号", 18, "bold").pack(
+            anchor="w"
+        )
+        text_label(
+            body,
+            "修改账号后点击保存即可。" if original_account else "请输入你的校园网账号和密码。",
+            9,
+            color=MUTED,
+        ).pack(anchor="w", pady=(5, 22))
+
+        self.account = tk.StringVar(value=original_account)
         self.password = tk.StringVar()
-        ttk.Entry(body, textvariable=self.account, font=("Microsoft YaHei UI", 10)).pack(fill="x", ipady=6)
-        ttk.Entry(body, textvariable=self.password, show="●", font=("Microsoft YaHei UI", 10)).pack(fill="x", ipady=6, pady=10)
-        row = tk.Frame(body, bg=CARD)
-        row.pack(fill="x", pady=(8, 0))
-        ttk.Button(row, text="保存", style="Primary.TButton", command=self.save).pack(side="right")
-        ttk.Button(row, text="取消", command=self.destroy).pack(side="right", padx=8)
-        self.bind("<Return>", lambda _e: self.save())
-        self.bind("<Escape>", lambda _e: self.destroy())
+        self.show_password = tk.BooleanVar(value=False)
+        self.error = tk.StringVar()
+
+        text_label(body, "校园网账号", 9, "bold").pack(anchor="w")
+        self.account_entry = modern_entry(body, self.account)
+        self.account_entry.pack(fill="x", ipady=9, pady=(7, 16))
+        text_label(body, "校园网密码", 9, "bold").pack(anchor="w")
+        self.password_entry = modern_entry(body, self.password, show="●")
+        self.password_entry.pack(fill="x", ipady=9, pady=(7, 5))
+        text_label(
+            body,
+            "留空表示保留原密码" if original_account else "请输入校园网密码",
+            8,
+            color=MUTED,
+        ).pack(anchor="w")
+        check_box(body, "显示密码", self.show_password).pack(anchor="w", pady=(9, 0))
+        self.show_password.trace_add(
+            "write",
+            lambda *_args: self.password_entry.configure(
+                show="" if self.show_password.get() else "●"
+            ),
+        )
+        tk.Label(
+            body,
+            textvariable=self.error,
+            bg=CARD,
+            fg=DANGER,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w", pady=(8, 0))
+
+        actions = tk.Frame(body, bg=CARD)
+        actions.pack(fill="x", side="bottom")
+        flat_button(actions, "保存", self.save, "primary", width=8).pack(side="right")
+        flat_button(actions, "取消", self.destroy, "quiet", width=8).pack(side="right", padx=8)
+        self.bind("<Return>", lambda _event: self.save())
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.after_idle(lambda: center_on_parent(self, parent, 470, 380))
+        self.after_idle(self.account_entry.focus_set)
 
     def save(self):
-        account, password = self.account.get().strip(), self.password.get()
-        if not account or not password:
-            messagebox.showwarning("信息不完整", "账号和密码不能为空。", parent=self)
+        account = self.account.get().strip()
+        password = self.password.get()
+        if not account:
+            self.error.set("请输入校园网账号。")
+            self.account_entry.focus_set()
+            return
+        if not self.original_account and not password:
+            self.error.set("请输入校园网密码。")
+            self.password_entry.focus_set()
             return
         self.result = (account, password)
         self.password.set("")
@@ -101,50 +274,77 @@ class AccountDialog(tk.Toplevel):
 
 
 class FirstRunDialog(tk.Toplevel):
-    def __init__(self, app):
+    def __init__(self, app: "GDUTApp"):
         super().__init__(app)
         self.app = app
         self.title("首次设置")
-        self.geometry("620x510")
+        self.geometry("620x520")
         self.resizable(False, False)
         self.transient(app)
         self.grab_set()
         self.configure(bg=CARD)
-        body = tk.Frame(self, bg=CARD, padx=34, pady=30)
+
+        body = tk.Frame(self, bg=CARD, padx=36, pady=30)
         body.pack(fill="both", expand=True)
-        label(body, "欢迎使用 GDUT 自动登录", 20, "bold").pack(anchor="w")
-        label(body, "选择已连接 GDUT 的有线或无线接口，保存后将静默监测网络。", color=MUTED).pack(anchor="w", pady=(6, 22))
-        label(body, "GDUT 网络接口", 9, "bold").pack(anchor="w")
-        self.adapter = ttk.Combobox(body, state="readonly")
-        self.adapter.pack(fill="x", ipady=5, pady=(6, 16))
+        text_label(body, "欢迎使用 GDUT 自动登录", 20, "bold").pack(anchor="w")
+        text_label(body, "完成下面三项设置，之后程序会在后台自动工作。", 9, color=MUTED).pack(
+            anchor="w", pady=(5, 22)
+        )
+        text_label(body, "1. 选择已连接 GDUT 的网络", 9, "bold").pack(anchor="w")
+        self.adapter = ttk.Combobox(body, state="readonly", style="Modern.TCombobox")
+        self.adapter.pack(fill="x", ipady=7, pady=(7, 16))
         self.adapters = app.fill_adapters(self.adapter)
-        self.account, self.password = tk.StringVar(), tk.StringVar()
-        label(body, "校园网账号", 9, "bold").pack(anchor="w")
-        ttk.Entry(body, textvariable=self.account).pack(fill="x", ipady=5, pady=(5, 12))
-        label(body, "密码", 9, "bold").pack(anchor="w")
-        ttk.Entry(body, textvariable=self.password, show="●").pack(fill="x", ipady=5, pady=(5, 14))
+
+        self.account = tk.StringVar()
+        self.password = tk.StringVar()
+        self.error = tk.StringVar()
+        text_label(body, "2. 输入校园网账号", 9, "bold").pack(anchor="w")
+        modern_entry(body, self.account).pack(fill="x", ipady=8, pady=(7, 14))
+        text_label(body, "3. 输入校园网密码", 9, "bold").pack(anchor="w")
+        modern_entry(body, self.password, show="●").pack(fill="x", ipady=8, pady=(7, 12))
         self.autostart = tk.BooleanVar(value=True)
-        ttk.Checkbutton(body, text="登录 Windows 后自动静默启动", variable=self.autostart).pack(anchor="w")
-        row = tk.Frame(body, bg=CARD)
-        row.pack(fill="x", side="bottom")
-        ttk.Button(row, text="保存并启动", style="Primary.TButton", command=self.finish).pack(side="right")
-        ttk.Button(row, text="稍后设置", command=self.destroy).pack(side="right", padx=8)
+        check_box(body, "登录 Windows 后自动在后台运行", self.autostart).pack(anchor="w")
+        tk.Label(
+            body,
+            textvariable=self.error,
+            bg=CARD,
+            fg=DANGER,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w", pady=(8, 0))
+        actions = tk.Frame(body, bg=CARD)
+        actions.pack(fill="x", side="bottom")
+        flat_button(actions, "完成设置", self.finish, "primary").pack(side="right")
+        flat_button(actions, "稍后设置", self.destroy, "quiet").pack(side="right", padx=8)
+        self.after_idle(lambda: center_on_parent(self, app, 620, 520))
 
     def finish(self):
         index = self.adapter.current()
-        if index < 0 or not self.account.get().strip() or not self.password.get():
-            messagebox.showwarning("设置未完成", "请选择 GDUT 接口并填写账号密码。", parent=self)
+        account, password = self.account.get().strip(), self.password.get()
+        if index < 0:
+            self.error.set("请先选择 GDUT 网络接口。")
+            return
+        if not account:
+            self.error.set("请输入校园网账号。")
+            return
+        if not password:
+            self.error.set("请输入校园网密码。")
             return
         adapter = self.adapters[index]
         if not any("gdut" in value.casefold() for value in [adapter.name, *adapter.profile_names]):
-            messagebox.showwarning("接口不匹配", "所选接口名称、网络配置文件或 SSID 中没有 GDUT。", parent=self)
+            self.error.set("所选接口名称、网络配置文件或 SSID 中没有 GDUT。")
             return
         config = load_config()
-        config.update({"adapter_name": adapter.name, "adapter_mac": adapter.mac,
-                       "autostart_enabled": self.autostart.get()})
+        config.update(
+            {
+                "adapter_name": adapter.name,
+                "adapter_mac": adapter.mac,
+                "autostart_enabled": self.autostart.get(),
+            }
+        )
         try:
             save_config(config)
-            add_or_update_account(self.account.get().strip(), self.password.get())
+            add_or_update_account(account, password)
+            self.password.set("")
             if self.autostart.get():
                 set_autostart(True)
                 start_monitor()
@@ -152,24 +352,29 @@ class FirstRunDialog(tk.Toplevel):
             self.app.reload_all()
             self.app.run_check(True)
         except Exception as exc:
-            messagebox.showerror("设置失败", str(exc), parent=self)
+            self.error.set(f"保存失败：{exc}")
 
 
 class GDUTApp(tk.Tk):
-    NAV = [("overview", "概览", "⌂"), ("connection", "连接", "◉"), ("accounts", "账号", "♙"),
-           ("logs", "日志", "≡"), ("updates", "更新", "↻"), ("settings", "设置", "⚙")]
+    NAV = [
+        ("overview", "概览", "●"),
+        ("accounts", "账号", "◎"),
+        ("logs", "日志", "≡"),
+        ("settings", "设置", "⚙"),
+    ]
 
-    def __init__(self, first_run=False):
+    def __init__(self, first_run: bool = False):
         super().__init__()
         self.title(f"{APP_NAME}  {APP_VERSION}")
-        self.geometry("1180x760")
-        self.minsize(1000, 680)
+        self.geometry("1120x740")
+        self.minsize(960, 650)
         self.configure(bg=BG)
         self.database = EventDatabase()
         self.adapters: list[AdapterInfo] = []
         self._busy = False
         self._update_info: UpdateInfo | None = None
-        self.pages, self.nav_buttons = {}, {}
+        self.pages: dict[str, tk.Frame] = {}
+        self.nav_buttons: dict[str, tk.Button] = {}
         self._configure_style()
         self._build_shell()
         self.show_page("overview")
@@ -182,223 +387,482 @@ class GDUTApp(tk.Tk):
 
     def _configure_style(self):
         style = ttk.Style(self)
-        try: style.theme_use("clam")
-        except tk.TclError: pass
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
         self.option_add("*Font", ("Microsoft YaHei UI", 9))
-        style.configure("TButton", padding=(14, 8), borderwidth=0)
-        style.configure("Primary.TButton", foreground="white", background=PRIMARY)
-        style.map("Primary.TButton", background=[("active", "#1D4ED8"), ("disabled", "#98A2B3")])
-        style.configure("Treeview", rowheight=34, borderwidth=0, fieldbackground=CARD, background=CARD)
-        style.configure("Treeview.Heading", padding=8, font=("Microsoft YaHei UI", 9, "bold"))
-        style.configure("TEntry", padding=5)
+        style.configure(
+            "Modern.TCombobox",
+            fieldbackground="white",
+            background="white",
+            foreground=TEXT,
+            arrowcolor=MUTED,
+            bordercolor=BORDER,
+            lightcolor=BORDER,
+            darkcolor=BORDER,
+            padding=(10, 6),
+        )
+        style.map(
+            "Modern.TCombobox",
+            fieldbackground=[("readonly", "white")],
+            selectbackground=[("readonly", "white")],
+            selectforeground=[("readonly", TEXT)],
+            bordercolor=[("focus", PRIMARY)],
+        )
+        style.configure(
+            "Modern.Horizontal.TProgressbar",
+            troughcolor="#E9EDF4",
+            background=PRIMARY,
+            borderwidth=0,
+        )
+        style.configure(
+            "Modern.Vertical.TScrollbar",
+            troughcolor=CARD,
+            background="#C9D1DE",
+            bordercolor=CARD,
+            arrowcolor=MUTED,
+            lightcolor="#C9D1DE",
+            darkcolor="#C9D1DE",
+        )
 
     def _build_shell(self):
-        sidebar = tk.Frame(self, bg=SIDEBAR, width=220)
+        sidebar = tk.Frame(self, bg=SIDEBAR, width=205)
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
-        brand = tk.Frame(sidebar, bg=SIDEBAR, padx=22, pady=24)
+        brand = tk.Frame(sidebar, bg=SIDEBAR, padx=22, pady=25)
         brand.pack(fill="x")
-        label(brand, "GDUT", 19, "bold", "white").pack(anchor="w")
-        label(brand, "校园网连接助手", 9, color="#98A2B3").pack(anchor="w")
+        text_label(brand, "GDUT", 20, "bold", "white").pack(anchor="w")
+        text_label(brand, "校园网助手", 9, color="#A7B0C0").pack(anchor="w", pady=(2, 0))
+
         nav = tk.Frame(sidebar, bg=SIDEBAR, padx=10)
         nav.pack(fill="x", pady=8)
         for key, title, icon in self.NAV:
-            button = tk.Button(nav, text=f"  {icon}    {title}", anchor="w", bg=SIDEBAR, fg="#D0D5DD",
-                               activebackground=SIDEBAR_ACTIVE, activeforeground="white", relief="flat",
-                               borderwidth=0, padx=14, pady=12, font=("Microsoft YaHei UI", 10),
-                               command=lambda k=key: self.show_page(k))
-            button.pack(fill="x", pady=2)
+            button = tk.Button(
+                nav,
+                text=f"  {icon}    {title}",
+                anchor="w",
+                bg=SIDEBAR,
+                fg="#CBD2DE",
+                activebackground=SIDEBAR_ACTIVE,
+                activeforeground="white",
+                relief="flat",
+                borderwidth=0,
+                cursor="hand2",
+                padx=14,
+                pady=12,
+                font=("Microsoft YaHei UI", 10),
+                command=lambda page=key: self.show_page(page),
+            )
+            button.pack(fill="x", pady=3)
             self.nav_buttons[key] = button
+
         footer = tk.Frame(sidebar, bg=SIDEBAR, padx=22, pady=22)
         footer.pack(side="bottom", fill="x")
-        self.sidebar_status = label(footer, "●  正在读取状态", 9, color="#98A2B3")
+        self.sidebar_status = text_label(footer, "●  正在读取状态", 9, color="#A7B0C0")
         self.sidebar_status.pack(anchor="w")
-        label(footer, f"v{APP_VERSION}", 8, color="#667085").pack(anchor="w", pady=(6, 0))
+        text_label(footer, f"v{APP_VERSION}", 8, color="#7D8798").pack(anchor="w", pady=(6, 0))
+
         self.content = tk.Frame(self, bg=BG)
         self.content.pack(side="left", fill="both", expand=True)
         for key, *_ in self.NAV:
-            page = tk.Frame(self.content, bg=BG, padx=30, pady=26)
-            self.pages[key] = page
-        self._build_overview(); self._build_connection(); self._build_accounts()
-        self._build_logs(); self._build_updates(); self._build_settings()
+            self.pages[key] = tk.Frame(self.content, bg=BG, padx=28, pady=24)
+        self._build_overview()
+        self._build_accounts()
+        self._build_logs()
+        self._build_settings()
 
-    def show_page(self, key):
-        for page in self.pages.values(): page.pack_forget()
+    def show_page(self, key: str):
+        for page in self.pages.values():
+            page.pack_forget()
         self.pages[key].pack(fill="both", expand=True)
         for name, button in self.nav_buttons.items():
-            button.configure(bg=SIDEBAR_ACTIVE if name == key else SIDEBAR,
-                             fg="white" if name == key else "#D0D5DD")
-        if key == "logs": self.refresh_logs()
-        if key == "updates": self.render_update_status(load_update_status())
+            button.configure(
+                bg=SIDEBAR_ACTIVE if name == key else SIDEBAR,
+                fg="white" if name == key else "#CBD2DE",
+            )
+        if key == "accounts":
+            self.refresh_accounts()
+        elif key == "logs":
+            self.refresh_logs()
+        elif key == "settings":
+            self.render_update_status(load_update_status())
 
-    def page_header(self, page, title, subtitle):
-        label(page, title, 22, "bold").pack(anchor="w")
-        label(page, subtitle, 9, color=MUTED).pack(anchor="w", pady=(4, 20))
+    def page_header(self, page, title: str, subtitle: str):
+        text_label(page, title, 22, "bold").pack(anchor="w")
+        if subtitle:
+            text_label(page, subtitle, 9, color=MUTED).pack(anchor="w", pady=(4, 18))
+        else:
+            tk.Frame(page, bg=BG, height=16).pack(fill="x")
 
     def card(self, parent, padx=20, pady=18):
-        frame = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1, padx=padx, pady=pady)
-        return frame
+        return tk.Frame(
+            parent,
+            bg=CARD,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+            padx=padx,
+            pady=pady,
+        )
 
     def _build_overview(self):
         page = self.pages["overview"]
-        self.page_header(page, "网络概览", "GDUT 接口状态、认证与后台服务一目了然")
-        hero = self.card(page, 26, 24); hero.pack(fill="x")
-        top = tk.Frame(hero, bg=CARD); top.pack(fill="x")
-        self.status_dot = label(top, "●", 24, color=MUTED); self.status_dot.pack(side="left", padx=(0, 12))
-        status_text = tk.Frame(top, bg=CARD); status_text.pack(side="left")
+        self.page_header(page, "网络概览", "")
+        hero = self.card(page, 24, 22)
+        hero.pack(fill="x")
+        top = tk.Frame(hero, bg=CARD)
+        top.pack(fill="x")
+        self.status_dot = text_label(top, "●", 24, color=MUTED)
+        self.status_dot.pack(side="left", padx=(0, 12))
+        status_group = tk.Frame(top, bg=CARD)
+        status_group.pack(side="left")
         self.status_var = tk.StringVar(value="尚未检查")
-        tk.Label(status_text, textvariable=self.status_var, font=("Microsoft YaHei UI", 20, "bold"), fg=TEXT, bg=CARD).pack(anchor="w")
-        self.status_hint = label(status_text, "等待首次网络检测", 9, color=MUTED); self.status_hint.pack(anchor="w", pady=(3, 0))
-        actions = tk.Frame(top, bg=CARD); actions.pack(side="right")
-        self.check_button = ttk.Button(actions, text="立即检查", command=lambda: self.run_check(False)); self.check_button.pack(side="left", padx=6)
-        self.login_button = ttk.Button(actions, text="检查并恢复", style="Primary.TButton", command=lambda: self.run_check(True)); self.login_button.pack(side="left")
-        stats = tk.Frame(page, bg=BG); stats.pack(fill="x", pady=16)
-        self.stat_vars = {k: tk.StringVar(value="—") for k in ("monitor", "account", "check")}
-        for index, (title, key) in enumerate((("后台服务", "monitor"), ("上次成功账号", "account"), ("最后检查", "check"))):
-            box = self.card(stats, 18, 15); box.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 8, 0))
-            label(box, title, 9, color=MUTED).pack(anchor="w")
-            tk.Label(box, textvariable=self.stat_vars[key], font=("Microsoft YaHei UI", 12, "bold"), fg=TEXT, bg=CARD).pack(anchor="w", pady=(7, 0))
-            stats.columnconfigure(index, weight=1)
-        recent = self.card(page); recent.pack(fill="both", expand=True)
-        label(recent, "最近活动", 12, "bold").pack(anchor="w", pady=(0, 10))
-        self.recent_list = tk.Frame(recent, bg=CARD); self.recent_list.pack(fill="both", expand=True)
+        tk.Label(
+            status_group,
+            textvariable=self.status_var,
+            font=("Microsoft YaHei UI", 20, "bold"),
+            fg=TEXT,
+            bg=CARD,
+        ).pack(anchor="w")
+        self.status_hint = text_label(status_group, "等待首次网络检测", 9, color=MUTED)
+        self.status_hint.pack(anchor="w", pady=(3, 0))
+        actions = tk.Frame(top, bg=CARD)
+        actions.pack(side="right")
+        self.check_button = flat_button(actions, "立即检查", lambda: self.run_check(False))
+        self.check_button.pack(side="left", padx=(0, 8))
+        self.login_button = flat_button(
+            actions, "重新连接", lambda: self.run_check(True), "primary"
+        )
+        self.login_button.pack(side="left")
 
-    def _build_connection(self):
-        page = self.pages["connection"]
-        self.page_header(page, "连接详情", "所有探测与登录请求都绑定到这个 GDUT 接口的源 IP")
-        box = self.card(page, 24, 22); box.pack(fill="x")
-        self.connection_vars = {k: tk.StringVar(value="—") for k in ("adapter", "profile", "ip", "mac", "error")}
-        for row, (title, key) in enumerate((("接口", "adapter"), ("网络配置文件 / SSID", "profile"), ("绑定源 IP", "ip"), ("MAC 地址", "mac"), ("最近问题", "error"))):
-            label(box, title, 9, color=MUTED).grid(row=row, column=0, sticky="nw", pady=10, padx=(0, 35))
-            tk.Label(box, textvariable=self.connection_vars[key], font=("Microsoft YaHei UI", 10, "bold" if key == "ip" else "normal"), fg=TEXT, bg=CARD, wraplength=650, justify="left").grid(row=row, column=1, sticky="nw", pady=10)
-        label(page, "安全边界", 12, "bold").pack(anchor="w", pady=(22, 8))
-        note = self.card(page)
-        note.pack(fill="x")
-        label(note, "只有接口名称、网络配置文件或无线 SSID 包含“gdut”（不区分大小写），且取得校园网 IP 时才会执行检测和认证。未匹配时程序停止操作，不会借用其他网卡。", 9, color=MUTED, wraplength=820, justify="left").pack(anchor="w")
+        stats = tk.Frame(page, bg=BG)
+        stats.pack(fill="x", pady=14)
+        self.stat_vars = {key: tk.StringVar(value="—") for key in ("monitor", "account", "check")}
+        for index, (title, key) in enumerate(
+            (("后台服务", "monitor"), ("上次账号", "account"), ("最后检查", "check"))
+        ):
+            box = self.card(stats, 17, 14)
+            box.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 7, 0))
+            text_label(box, title, 8, color=MUTED).pack(anchor="w")
+            tk.Label(
+                box,
+                textvariable=self.stat_vars[key],
+                font=("Microsoft YaHei UI", 11, "bold"),
+                fg=TEXT,
+                bg=CARD,
+            ).pack(anchor="w", pady=(6, 0))
+            stats.columnconfigure(index, weight=1)
+
+        columns = tk.Frame(page, bg=BG)
+        columns.pack(fill="both", expand=True)
+        columns.columnconfigure(0, weight=5)
+        columns.columnconfigure(1, weight=4)
+        columns.rowconfigure(0, weight=1)
+
+        recent = self.card(columns, 18, 16)
+        recent.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        text_label(recent, "最近活动", 11, "bold").pack(anchor="w", pady=(0, 9))
+        self.recent_list = tk.Frame(recent, bg=CARD)
+        self.recent_list.pack(fill="both", expand=True)
+
+        connection = self.card(columns, 18, 16)
+        connection.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        text_label(connection, "GDUT 连接", 11, "bold").pack(anchor="w", pady=(0, 8))
+        self.connection_vars = {
+            key: tk.StringVar(value="—") for key in ("adapter", "profile", "ip", "error")
+        }
+        for title, key in (
+            ("网络", "profile"),
+            ("接口", "adapter"),
+            ("源 IP", "ip"),
+            ("最近问题", "error"),
+        ):
+            row = tk.Frame(connection, bg=CARD)
+            row.pack(fill="x", pady=7)
+            text_label(row, title, 8, color=MUTED).pack(anchor="w")
+            tk.Label(
+                row,
+                textvariable=self.connection_vars[key],
+                bg=CARD,
+                fg=TEXT,
+                font=("Microsoft YaHei UI", 9, "bold" if key == "ip" else "normal"),
+                wraplength=330,
+                justify="left",
+            ).pack(anchor="w", pady=(2, 0))
 
     def _build_accounts(self):
         page = self.pages["accounts"]
-        self.page_header(page, "账号管理", "账号密码独立加密保存；列表顺序用于授权账号的故障切换")
-        toolbar = tk.Frame(page, bg=BG); toolbar.pack(fill="x", pady=(0, 10))
-        ttk.Button(toolbar, text="添加或更新", style="Primary.TButton", command=self.add_account).pack(side="right")
-        ttk.Button(toolbar, text="删除选中", command=self.delete_account).pack(side="right", padx=8)
-        box = self.card(page, 1, 1); box.pack(fill="both", expand=True)
-        self.account_tree = ttk.Treeview(box, columns=("order", "account", "status"), show="headings")
-        for key, title, width in (("order", "顺序", 90), ("account", "脱敏账号", 300), ("status", "状态", 220)):
-            self.account_tree.heading(key, text=title); self.account_tree.column(key, width=width, anchor="center")
-        self.account_tree.pack(fill="both", expand=True)
-        label(page, "密码不会显示在界面、日志或导出文件中。请仅使用本人或已明确授权的校园网账号。", 9, color=MUTED).pack(anchor="w", pady=(10, 0))
+        self.page_header(page, "账号", "双击账号即可编辑")
+        toolbar = tk.Frame(page, bg=BG)
+        toolbar.pack(fill="x", pady=(0, 10))
+        self.account_count = text_label(toolbar, "0 个账号", 9, color=MUTED)
+        self.account_count.pack(side="left", pady=8)
+        flat_button(toolbar, "添加账号", self.add_account, "primary").pack(side="right")
+        account_card = self.card(page, 0, 0)
+        account_card.pack(fill="both", expand=True)
+        self.account_list = ScrollablePanel(account_card)
+        self.account_list.pack(fill="both", expand=True, padx=1, pady=1)
 
     def _build_logs(self):
         page = self.pages["logs"]
-        self.page_header(page, "运行日志", "搜索、筛选并导出网络检测和认证记录")
-        bar = tk.Frame(page, bg=BG); bar.pack(fill="x", pady=(0, 10))
-        self.log_search = tk.StringVar(); self.log_level = tk.StringVar(value="全部"); self.log_days = tk.StringVar(value="全部")
-        entry = ttk.Entry(bar, textvariable=self.log_search, width=30); entry.pack(side="left", ipady=3)
-        entry.bind("<KeyRelease>", lambda _e: self.refresh_logs())
-        ttk.Combobox(bar, textvariable=self.log_level, values=("全部", "INFO", "WARNING", "ERROR", "CRITICAL"), state="readonly", width=12).pack(side="left", padx=8)
-        ttk.Combobox(bar, textvariable=self.log_days, values=("全部", "今天", "7 天", "30 天", "90 天"), state="readonly", width=10).pack(side="left")
-        ttk.Button(bar, text="刷新", command=self.refresh_logs).pack(side="left", padx=8)
-        ttk.Button(bar, text="导出 CSV", command=self.export_logs).pack(side="right")
-        box = self.card(page, 1, 1); box.pack(fill="both", expand=True)
-        self.log_tree = ttk.Treeview(box, columns=("time", "level", "message"), show="headings")
-        for key, title, width in (("time", "时间", 165), ("level", "级别", 90), ("message", "消息", 580)):
-            self.log_tree.heading(key, text=title); self.log_tree.column(key, width=width, anchor="w")
-        self.log_tree.pack(fill="both", expand=True)
+        self.page_header(page, "日志", "")
+        filters = tk.Frame(page, bg=BG)
+        filters.pack(fill="x", pady=(0, 10))
+        self.log_search = tk.StringVar()
+        self.log_level = tk.StringVar(value="全部级别")
+        self.log_days = tk.StringVar(value="最近 7 天")
+        search = modern_entry(filters, self.log_search, width=28)
+        search.pack(side="left", ipady=7)
+        search.insert(0, "")
+        search.bind("<KeyRelease>", lambda _event: self.refresh_logs())
+        level = ttk.Combobox(
+            filters,
+            textvariable=self.log_level,
+            values=("全部级别", "INFO", "WARNING", "ERROR", "CRITICAL"),
+            state="readonly",
+            width=12,
+            style="Modern.TCombobox",
+        )
+        level.pack(side="left", padx=8)
+        days = ttk.Combobox(
+            filters,
+            textvariable=self.log_days,
+            values=("今天", "最近 7 天", "最近 30 天", "全部时间"),
+            state="readonly",
+            width=13,
+            style="Modern.TCombobox",
+        )
+        days.pack(side="left")
+        level.bind("<<ComboboxSelected>>", lambda _event: self.refresh_logs())
+        days.bind("<<ComboboxSelected>>", lambda _event: self.refresh_logs())
+        flat_button(filters, "刷新", self.refresh_logs).pack(side="left", padx=8)
+        self.log_count = text_label(filters, "", 8, color=MUTED)
+        self.log_count.pack(side="right", pady=8)
 
-    def _build_updates(self):
-        page = self.pages["updates"]
-        self.page_header(page, "更新中心", "通过 GitHub Release 获取新版，并使用 SHA-256 验证完整性")
-        box = self.card(page, 24, 22); box.pack(fill="x")
-        row = tk.Frame(box, bg=CARD); row.pack(fill="x")
-        self.update_title = label(row, f"当前版本 {APP_VERSION}", 17, "bold"); self.update_title.pack(side="left")
-        self.update_button = ttk.Button(row, text="检查更新", style="Primary.TButton", command=self.check_updates); self.update_button.pack(side="right")
-        self.update_message = label(box, "尚未检查更新", 10, color=MUTED, wraplength=780, justify="left"); self.update_message.pack(anchor="w", pady=(10, 14))
-        self.update_progress = ttk.Progressbar(box, mode="determinate"); self.update_progress.pack(fill="x")
-        self.install_button = ttk.Button(box, text="下载并安装", command=self.download_and_install, state="disabled")
-        self.install_button.pack(anchor="e", pady=(14, 0))
-        safety = self.card(page); safety.pack(fill="x", pady=16)
-        label(safety, "安全更新流程", 12, "bold").pack(anchor="w")
-        label(safety, "1  从项目 GitHub Release 下载  →  2  核对文件大小和 SHA-256  →  3  由你确认安装  →  4  备份旧版并替换  →  5  新版自检，失败自动回滚", 9, color=MUTED, wraplength=850, justify="left").pack(anchor="w", pady=(9, 0))
-        label(safety, "当前发行版没有商业代码签名证书，因此不会静默安装未知新版；Windows 仍可能显示 SmartScreen 提示。", 9, color=WARNING, wraplength=850, justify="left").pack(anchor="w", pady=(10, 0))
+        log_card = self.card(page, 0, 0)
+        log_card.pack(fill="both", expand=True)
+        self.log_list = ScrollablePanel(log_card)
+        self.log_list.pack(fill="both", expand=True, padx=1, pady=1)
 
     def _build_settings(self):
         page = self.pages["settings"]
-        self.page_header(page, "设置", "选择 GDUT 接口，调整后台检查、通知和日志策略")
-        canvas = tk.Canvas(page, bg=BG, highlightthickness=0); canvas.pack(fill="both", expand=True)
-        body = tk.Frame(canvas, bg=BG); window = canvas.create_window((0, 0), window=body, anchor="nw")
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
-        body.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        network = self.card(body); network.pack(fill="x")
-        label(network, "GDUT 网络接口", 12, "bold").pack(anchor="w")
-        row = tk.Frame(network, bg=CARD); row.pack(fill="x", pady=(10, 0))
-        self.adapter_combo = ttk.Combobox(row, state="readonly"); self.adapter_combo.pack(side="left", fill="x", expand=True, ipady=4)
-        ttk.Button(row, text="刷新", command=self.refresh_settings_adapters).pack(side="left", padx=(8, 0))
-        self.keyword = tk.StringVar(value="gdut")
-        row2 = tk.Frame(network, bg=CARD); row2.pack(fill="x", pady=(12, 0))
-        label(row2, "网络标识（不区分大小写）", 9, color=MUTED).pack(side="left")
-        ttk.Entry(row2, textvariable=self.keyword, width=16).pack(side="left", padx=12)
-        monitor = self.card(body); monitor.pack(fill="x", pady=14)
-        label(monitor, "后台与提醒", 12, "bold").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
-        self.check_interval, self.retry_interval, self.login_cooldown = tk.IntVar(), tk.IntVar(), tk.IntVar()
-        for col, (title, var) in enumerate((("正常检查（秒）", self.check_interval), ("接口重试（秒）", self.retry_interval), ("登录冷却（秒）", self.login_cooldown))):
-            label(monitor, title, 9, color=MUTED).grid(row=1, column=col, sticky="w", padx=(0, 28))
-            ttk.Spinbox(monitor, from_=5, to=3600, textvariable=var, width=12).grid(row=2, column=col, sticky="w", pady=(5, 10))
-        self.notifications, self.autostart, self.auto_updates = tk.BooleanVar(), tk.BooleanVar(), tk.BooleanVar()
-        ttk.Checkbutton(monitor, text="失败时发送 Windows 通知", variable=self.notifications).grid(row=3, column=0, sticky="w")
-        ttk.Checkbutton(monitor, text="开机静默启动", variable=self.autostart).grid(row=3, column=1, sticky="w")
-        ttk.Checkbutton(monitor, text="每天自动检查更新", variable=self.auto_updates).grid(row=3, column=2, sticky="w")
-        logs = self.card(body); logs.pack(fill="x")
-        label(logs, "日志策略", 12, "bold").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
-        self.log_size, self.log_retention = tk.StringVar(), tk.StringVar()
-        label(logs, "容量上限", 9, color=MUTED).grid(row=1, column=0, sticky="w")
-        ttk.Combobox(logs, textvariable=self.log_size, values=("5 MB", "10 MB", "20 MB", "50 MB", "100 MB"), state="readonly", width=12).grid(row=1, column=1, padx=(10, 30))
-        label(logs, "保留时间", 9, color=MUTED).grid(row=1, column=2, sticky="w")
-        ttk.Combobox(logs, textvariable=self.log_retention, values=("全部", "7 天", "30 天", "90 天", "180 天"), state="readonly", width=12).grid(row=1, column=3, padx=10)
-        bottom = tk.Frame(body, bg=BG); bottom.pack(fill="x", pady=14)
-        ttk.Button(bottom, text="保存设置", style="Primary.TButton", command=self.save_settings).pack(side="right")
-        ttk.Button(bottom, text="卸载", command=self.uninstall_app).pack(side="left")
-        label(bottom, f"数据目录：{DATABASE_PATH.parent}", 8, color=MUTED).pack(side="left", padx=12)
+        self.page_header(page, "设置", "网络、后台、日志与更新")
+        actions = tk.Frame(page, bg=BG)
+        actions.pack(side="bottom", fill="x", pady=(10, 0))
+        self.settings_feedback = tk.StringVar()
+        self.settings_feedback_label = tk.Label(
+            actions,
+            textvariable=self.settings_feedback,
+            bg=BG,
+            fg=SUCCESS,
+            font=("Microsoft YaHei UI", 9),
+        )
+        self.settings_feedback_label.pack(side="left", pady=8)
+        flat_button(actions, "保存设置", self.save_settings, "primary").pack(side="right")
+        flat_button(actions, "卸载", self.uninstall_app, "quiet").pack(side="right", padx=8)
+        scroll = ScrollablePanel(page, background=BG)
+        scroll.pack(fill="both", expand=True)
+        body = scroll.inner
 
-    def fill_adapters(self, combo):
+        network = self.card(body)
+        network.pack(fill="x", pady=(0, 12))
+        text_label(network, "GDUT 网络", 11, "bold").pack(anchor="w")
+        network_row = tk.Frame(network, bg=CARD)
+        network_row.pack(fill="x", pady=(10, 0))
+        self.adapter_combo = ttk.Combobox(
+            network_row, state="readonly", style="Modern.TCombobox"
+        )
+        self.adapter_combo.pack(side="left", fill="x", expand=True)
+        flat_button(network_row, "刷新", self.refresh_settings_adapters).pack(
+            side="left", padx=(8, 0)
+        )
+        self.keyword = tk.StringVar(value="gdut")
+
+        monitor = self.card(body)
+        monitor.pack(fill="x", pady=(0, 12))
+        text_label(monitor, "后台检查", 11, "bold").pack(anchor="w", pady=(0, 10))
+        values = tk.Frame(monitor, bg=CARD)
+        values.pack(fill="x")
+        self.check_interval = tk.IntVar()
+        self.retry_interval = tk.IntVar()
+        self.login_cooldown = tk.IntVar()
+        for index, (title, variable) in enumerate(
+            (
+                ("正常检查（秒）", self.check_interval),
+                ("断开重试（秒）", self.retry_interval),
+                ("失败冷却（秒）", self.login_cooldown),
+            )
+        ):
+            group = tk.Frame(values, bg=CARD)
+            group.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 12, 0))
+            text_label(group, title, 8, color=MUTED).pack(anchor="w")
+            modern_entry(group, variable).pack(fill="x", ipady=7, pady=(5, 0))
+            values.columnconfigure(index, weight=1)
+        toggles = tk.Frame(monitor, bg=CARD)
+        toggles.pack(fill="x", pady=(12, 0))
+        self.notifications = tk.BooleanVar()
+        self.autostart = tk.BooleanVar()
+        self.auto_updates = tk.BooleanVar()
+        check_box(toggles, "连接失败时通知", self.notifications).pack(side="left")
+        check_box(toggles, "开机后台运行", self.autostart).pack(side="left", padx=18)
+        check_box(toggles, "自动检查更新", self.auto_updates).pack(side="left")
+
+        logs = self.card(body)
+        logs.pack(fill="x", pady=(0, 12))
+        text_label(logs, "日志保留", 11, "bold").pack(anchor="w", pady=(0, 10))
+        log_row = tk.Frame(logs, bg=CARD)
+        log_row.pack(fill="x")
+        self.log_size = tk.StringVar()
+        self.log_retention = tk.StringVar()
+        text_label(log_row, "容量", 8, color=MUTED).pack(side="left")
+        ttk.Combobox(
+            log_row,
+            textvariable=self.log_size,
+            values=("5 MB", "10 MB", "20 MB", "50 MB", "100 MB"),
+            state="readonly",
+            width=11,
+            style="Modern.TCombobox",
+        ).pack(side="left", padx=(8, 22))
+        text_label(log_row, "时间", 8, color=MUTED).pack(side="left")
+        ttk.Combobox(
+            log_row,
+            textvariable=self.log_retention,
+            values=("全部", "7 天", "30 天", "90 天", "180 天"),
+            state="readonly",
+            width=11,
+            style="Modern.TCombobox",
+        ).pack(side="left", padx=8)
+
+        update = self.card(body)
+        update.pack(fill="x", pady=(0, 12))
+        update_header = tk.Frame(update, bg=CARD)
+        update_header.pack(fill="x")
+        self.update_title = text_label(update_header, f"软件更新 · v{APP_VERSION}", 11, "bold")
+        self.update_title.pack(side="left")
+        self.update_button = flat_button(update_header, "检查更新", self.check_updates)
+        self.update_button.pack(side="right")
+        self.update_message = text_label(
+            update, "尚未检查更新", 8, color=MUTED, wraplength=720, justify="left"
+        )
+        self.update_message.pack(anchor="w", pady=(7, 8))
+        self.update_progress = ttk.Progressbar(
+            update, mode="determinate", style="Modern.Horizontal.TProgressbar"
+        )
+        self.install_button = flat_button(update, "下载并安装", self.download_and_install, "primary")
+
+
+    def fill_adapters(self, combo: ttk.Combobox) -> list[AdapterInfo]:
         adapters = list_adapters()
-        combo["values"] = [f"{a.name}  |  网络: {', '.join(a.profile_names) or '未识别'}  |  IP: {', '.join(a.ipv4) or '无'}  |  {a.status}" for a in adapters]
+        combo["values"] = [
+            f"{item.name} · {', '.join(item.profile_names) or '未识别网络'} · "
+            f"{', '.join(item.ipv4) or '无 IPv4'}"
+            for item in adapters
+        ]
         if adapters:
-            config, selected = load_config(), 0
+            config = load_config()
             configured = str(config.get("adapter_mac", "")).replace("-", "").replace(":", "").upper()
             keyword = str(config.get("network_keyword", "gdut")).casefold()
-            for i, adapter in enumerate(adapters):
+            selected = 0
+            for index, adapter in enumerate(adapters):
                 mac = adapter.mac.replace("-", "").replace(":", "").upper()
-                if (configured and mac == configured) or (not configured and any(keyword in n.casefold() for n in [adapter.name, *adapter.profile_names])):
-                    selected = i; break
+                if (configured and mac == configured) or (
+                    not configured
+                    and any(keyword in name.casefold() for name in [adapter.name, *adapter.profile_names])
+                ):
+                    selected = index
+                    break
             combo.current(selected)
         return adapters
 
-    def refresh_settings_adapters(self): self.adapters = self.fill_adapters(self.adapter_combo)
+    def refresh_settings_adapters(self):
+        self.adapters = self.fill_adapters(self.adapter_combo)
+        self.settings_feedback.set("已刷新网络列表")
+        self.settings_feedback_label.configure(fg=MUTED)
 
     def reload_all(self):
-        self.refresh_accounts(); self.load_settings(); self.refresh_logs(); self.update_status_display(load_status())
+        self.refresh_accounts()
+        self.load_settings()
+        self.refresh_logs()
+        self.update_status_display(load_status())
+        self.render_update_status(load_update_status())
 
     def refresh_accounts(self):
-        if not hasattr(self, "account_tree"): return
-        self.account_tree.delete(*self.account_tree.get_children())
+        if not hasattr(self, "account_list"):
+            return
+        self.account_list.clear()
+        accounts = load_accounts()
         preferred = load_state().get("last_success_account")
-        for index, item in enumerate(load_accounts(), 1):
-            self.account_tree.insert("", "end", iid=item["account"], values=(index, mask_account(item["account"]), "上次成功" if item["account"] == preferred else "备用"))
+        self.account_count.configure(text=f"{len(accounts)} 个账号")
+        if not accounts:
+            empty = tk.Frame(self.account_list.inner, bg=CARD, pady=55)
+            empty.pack(fill="x")
+            text_label(empty, "还没有账号", 13, "bold", color=MUTED).pack()
+            text_label(empty, "点击右上角“添加账号”开始使用", 9, color=MUTED).pack(pady=(5, 0))
+            return
+        for index, item in enumerate(accounts, 1):
+            account = item["account"]
+            row = tk.Frame(self.account_list.inner, bg=CARD, padx=20, pady=15)
+            row.pack(fill="x")
+            if index > 1:
+                separator = tk.Frame(row, bg=BORDER, height=1)
+                separator.place(x=0, y=-15, relwidth=1)
+            avatar = tk.Label(
+                row,
+                text=str(index),
+                width=3,
+                height=1,
+                bg=SOFT_BLUE,
+                fg=PRIMARY,
+                font=("Microsoft YaHei UI", 10, "bold"),
+            )
+            avatar.pack(side="left", padx=(0, 14))
+            info = tk.Frame(row, bg=CARD)
+            info.pack(side="left", fill="x", expand=True)
+            account_label = text_label(info, mask_account(account), 11, "bold")
+            account_label.pack(anchor="w")
+            status = "上次连接成功" if account == preferred else "可用账号"
+            status_label = text_label(
+                info, f"{status} · 双击编辑", 8, color=SUCCESS if account == preferred else MUTED
+            )
+            status_label.pack(anchor="w", pady=(3, 0))
+            flat_button(row, "删除", lambda value=account: self.delete_account(value), "danger").pack(
+                side="right"
+            )
+            flat_button(row, "编辑", lambda value=account: self.open_account_editor(value)).pack(
+                side="right", padx=8
+            )
+            for widget in (row, avatar, info, account_label, status_label):
+                widget.bind("<Double-Button-1>", lambda _event, value=account: self.open_account_editor(value))
 
     def add_account(self):
-        dialog = AccountDialog(self); self.wait_window(dialog)
-        if dialog.result:
-            try:
-                added = add_or_update_account(*dialog.result); self.refresh_accounts()
-                messagebox.showinfo("保存成功", "账号已加密添加。" if added else "账号密码已更新。")
-            except Exception as exc: messagebox.showerror("保存失败", str(exc))
+        dialog = AccountDialog(self)
+        self.wait_window(dialog)
+        if not dialog.result:
+            return
+        account, password = dialog.result
+        try:
+            add_or_update_account(account, password)
+            self.refresh_accounts()
+        except Exception as exc:
+            messagebox.showerror("保存失败", str(exc), parent=self)
 
-    def delete_account(self):
-        selected = self.account_tree.selection()
-        if not selected: return messagebox.showwarning("未选择", "请先选择账号。")
-        if messagebox.askyesno("确认删除", f"确定删除账号 {mask_account(selected[0])} 吗？"):
-            remove_account(selected[0]); self.refresh_accounts()
+    def open_account_editor(self, original_account: str):
+        dialog = AccountDialog(self, original_account)
+        self.wait_window(dialog)
+        if not dialog.result:
+            return
+        account, password = dialog.result
+        try:
+            if not edit_account(original_account, account, password):
+                raise ValueError("账号不存在，可能已被删除。")
+            self.refresh_accounts()
+        except Exception as exc:
+            messagebox.showerror("保存失败", str(exc), parent=self)
+
+    def delete_account(self, account: str):
+        if messagebox.askyesno("删除账号", f"确定删除 {mask_account(account)} 吗？", parent=self):
+            remove_account(account)
+            self.refresh_accounts()
 
     def load_settings(self):
         config = load_config()
@@ -410,141 +874,286 @@ class GDUTApp(tk.Tk):
         self.auto_updates.set(bool(config.get("auto_check_updates", True)))
         self.keyword.set(str(config.get("network_keyword", "gdut")))
         self.log_size.set(f"{int(config.get('log_max_mb', 20))} MB")
-        days = int(config.get("log_retention_days", 0)); self.log_retention.set("全部" if not days else f"{days} 天")
+        days = int(config.get("log_retention_days", 0))
+        self.log_retention.set("全部" if not days else f"{days} 天")
         self.refresh_settings_adapters()
+        self.settings_feedback.set("")
 
     def save_settings(self):
         index = self.adapter_combo.current()
-        if index < 0 or index >= len(self.adapters): return messagebox.showwarning("请选择接口", "请先选择 GDUT 网络接口。")
-        adapter, keyword = self.adapters[index], self.keyword.get().strip() or "gdut"
-        if not any(keyword.casefold() in n.casefold() for n in [adapter.name, *adapter.profile_names]):
-            return messagebox.showwarning("接口不匹配", f"所选接口名称、配置文件和 SSID 均不包含“{keyword}”。")
+        if index < 0 or index >= len(self.adapters):
+            self.settings_feedback.set("请先选择 GDUT 网络")
+            self.settings_feedback_label.configure(fg=DANGER)
+            return
+        adapter = self.adapters[index]
+        keyword = self.keyword.get().strip() or "gdut"
+        if not any(keyword.casefold() in name.casefold() for name in [adapter.name, *adapter.profile_names]):
+            self.settings_feedback.set("所选网络不包含 gdut 标识")
+            self.settings_feedback_label.configure(fg=DANGER)
+            return
         try:
-            config = load_config(); config.update({
-                "adapter_name": adapter.name, "adapter_mac": adapter.mac, "network_keyword": keyword,
-                "check_interval_seconds": max(5, self.check_interval.get()), "retry_interval_seconds": max(5, self.retry_interval.get()),
-                "login_cooldown_seconds": max(15, self.login_cooldown.get()), "notifications_enabled": self.notifications.get(),
-                "autostart_enabled": self.autostart.get(), "auto_check_updates": self.auto_updates.get(),
-                "log_max_mb": int(self.log_size.get().split()[0]),
-                "log_retention_days": 0 if self.log_retention.get() == "全部" else int(self.log_retention.get().split()[0]),
-            })
-            save_config(config); set_autostart(self.autostart.get())
-            if self.autostart.get(): start_monitor()
+            config = load_config()
+            config.update(
+                {
+                    "adapter_name": adapter.name,
+                    "adapter_mac": adapter.mac,
+                    "network_keyword": keyword,
+                    "check_interval_seconds": max(5, int(self.check_interval.get())),
+                    "retry_interval_seconds": max(5, int(self.retry_interval.get())),
+                    "login_cooldown_seconds": max(15, int(self.login_cooldown.get())),
+                    "notifications_enabled": self.notifications.get(),
+                    "autostart_enabled": self.autostart.get(),
+                    "auto_check_updates": self.auto_updates.get(),
+                    "log_max_mb": int(self.log_size.get().split()[0]),
+                    "log_retention_days": 0
+                    if self.log_retention.get() == "全部"
+                    else int(self.log_retention.get().split()[0]),
+                }
+            )
+            save_config(config)
+            set_autostart(self.autostart.get())
+            if self.autostart.get():
+                start_monitor()
             self.database.maintain(config["log_max_mb"], config["log_retention_days"])
-            messagebox.showinfo("保存成功", "设置已经保存并立即生效。")
-        except Exception as exc: messagebox.showerror("保存失败", str(exc))
+            self.settings_feedback.set("设置已保存")
+            self.settings_feedback_label.configure(fg=SUCCESS)
+            self.after(2500, lambda: self.settings_feedback.set(""))
+        except Exception as exc:
+            self.settings_feedback.set(f"保存失败：{exc}")
+            self.settings_feedback_label.configure(fg=DANGER)
 
-    def selected_log_filters(self):
-        text = self.log_days.get(); days = 0 if text == "全部" else (1 if text == "今天" else int(text.split()[0]))
-        return days, "" if self.log_level.get() == "全部" else self.log_level.get()
+    def selected_log_filters(self) -> tuple[int, str]:
+        day_map = {"今天": 1, "最近 7 天": 7, "最近 30 天": 30, "全部时间": 0}
+        level = "" if self.log_level.get() == "全部级别" else self.log_level.get()
+        return day_map.get(self.log_days.get(), 7), level
 
     def refresh_logs(self):
-        if not hasattr(self, "log_tree"): return
-        self.log_tree.delete(*self.log_tree.get_children())
-        days, level = self.selected_log_filters(); search = self.log_search.get().casefold().strip()
-        for event_id, timestamp, row_level, message in self.database.query(days, level):
-            if search and search not in message.casefold(): continue
-            self.log_tree.insert("", "end", iid=str(event_id), values=(local_time(timestamp), row_level, message))
-        if hasattr(self, "recent_list"):
-            for child in self.recent_list.winfo_children(): child.destroy()
-            for _id, timestamp, level_name, message in self.database.query(limit=5):
-                row = tk.Frame(self.recent_list, bg=CARD); row.pack(fill="x", pady=5)
-                color = DANGER if level_name in ("ERROR", "CRITICAL") else WARNING if level_name == "WARNING" else PRIMARY
-                label(row, "●", 9, color=color).pack(side="left", padx=(0, 9))
-                label(row, message, 9, wraplength=590, justify="left").pack(side="left")
-                label(row, local_time(timestamp), 8, color=MUTED).pack(side="right")
+        if not hasattr(self, "log_list"):
+            return
+        self.log_list.clear()
+        days, level = self.selected_log_filters()
+        search = self.log_search.get().casefold().strip()
+        rows = [
+            row
+            for row in self.database.query(days, level, limit=500)
+            if not search or search in row[3].casefold()
+        ]
+        self.log_count.configure(text=f"{len(rows)} 条")
+        if not rows:
+            empty = tk.Frame(self.log_list.inner, bg=CARD, pady=55)
+            empty.pack(fill="x")
+            text_label(empty, "没有符合条件的日志", 11, "bold", color=MUTED).pack()
+        level_names = {
+            "INFO": ("信息", PRIMARY, SOFT_BLUE),
+            "WARNING": ("提醒", WARNING, "#FFF6E8"),
+            "ERROR": ("错误", DANGER, "#FFF0F0"),
+            "CRITICAL": ("严重", DANGER, "#FFF0F0"),
+        }
+        for index, (_event_id, timestamp, row_level, message) in enumerate(rows):
+            row = tk.Frame(self.log_list.inner, bg=CARD, padx=18, pady=13)
+            row.pack(fill="x")
+            if index:
+                separator = tk.Frame(row, bg=BORDER, height=1)
+                separator.place(x=0, y=-13, relwidth=1)
+            name, color, badge_bg = level_names.get(row_level, (row_level, MUTED, "#F2F4F7"))
+            badge = tk.Label(
+                row,
+                text=name,
+                width=5,
+                bg=badge_bg,
+                fg=color,
+                font=("Microsoft YaHei UI", 8, "bold"),
+                pady=4,
+            )
+            badge.pack(side="left", padx=(0, 13))
+            text_label(row, message, 9, wraplength=610, justify="left").pack(
+                side="left", fill="x", expand=True
+            )
+            text_label(row, local_time(timestamp), 8, color=MUTED).pack(side="right", padx=(12, 0))
+        self._refresh_recent(rows[:5] if rows else self.database.query(limit=5))
 
-    def export_logs(self):
-        path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV 文件", "*.csv")], initialfile=f"GDUT日志-{datetime.now():%Y%m%d-%H%M%S}.csv")
-        if path:
-            days, level = self.selected_log_filters(); count = self.database.export_csv(Path(path), days, level)
-            messagebox.showinfo("导出完成", f"已导出 {count} 条日志。")
+    def _refresh_recent(self, rows):
+        if not hasattr(self, "recent_list"):
+            return
+        for child in self.recent_list.winfo_children():
+            child.destroy()
+        if not rows:
+            text_label(self.recent_list, "暂无活动", 9, color=MUTED).pack(anchor="w", pady=8)
+            return
+        for _event_id, timestamp, level, message in rows[:5]:
+            row = tk.Frame(self.recent_list, bg=CARD)
+            row.pack(fill="x", pady=6)
+            color = DANGER if level in ("ERROR", "CRITICAL") else WARNING if level == "WARNING" else PRIMARY
+            text_label(row, "●", 8, color=color).pack(side="left", padx=(0, 8))
+            text_label(row, message, 8, wraplength=380, justify="left").pack(side="left", fill="x", expand=True)
+            text_label(row, local_time(timestamp)[5:16], 7, color=MUTED).pack(side="right", padx=(8, 0))
 
-    def run_check(self, login):
-        if self._busy: return
-        self._busy = True; self.check_button.configure(state="disabled"); self.login_button.configure(state="disabled"); self.status_var.set("正在检查……")
+    def run_check(self, login: bool):
+        if self._busy:
+            return
+        self._busy = True
+        self.check_button.configure(state="disabled")
+        self.login_button.configure(state="disabled")
+        self.status_var.set("正在检查……")
+
         def worker():
-            try: result, error = perform_check(login_if_needed=login, monitor_running=True), None
-            except Exception as exc: result, error = {}, exc
+            try:
+                result, error = perform_check(login_if_needed=login, monitor_running=True), None
+            except Exception as exc:
+                result, error = {}, exc
             self.after(0, lambda: self.check_finished(result, error))
+
         threading.Thread(target=worker, daemon=True).start()
 
-    def check_finished(self, status, error):
-        self._busy = False; self.check_button.configure(state="normal"); self.login_button.configure(state="normal")
-        if error: messagebox.showerror("检查失败", str(error))
-        else: self.update_status_display(status); self.refresh_accounts(); self.refresh_logs()
+    def check_finished(self, status: dict, error: Exception | None):
+        self._busy = False
+        self.check_button.configure(state="normal")
+        self.login_button.configure(state="normal")
+        if error:
+            self.status_var.set("检查失败")
+            self.status_hint.configure(text=str(error))
+        else:
+            self.update_status_display(status)
+            self.refresh_accounts()
+            self.refresh_logs()
 
     def poll_status(self):
-        self.update_status_display(load_status()); self.after(2500, self.poll_status)
+        self.update_status_display(load_status())
+        self.after(2500, self.poll_status)
 
-    def update_status_display(self, status):
-        state = status.get("state", "unknown"); color = STATUS_COLORS.get(state, MUTED)
-        self.status_var.set(status.get("state_text") or "尚未检查")
+    def update_status_display(self, status: dict):
+        state = status.get("state", "unknown")
+        color = STATUS_COLORS.get(state, MUTED)
+        state_text = status.get("state_text") or "尚未检查"
+        self.status_var.set(state_text)
         self.status_dot.configure(fg=color)
-        self.status_hint.configure(text=(status.get("network_profile") or "等待连接 GDUT 网络"))
-        self.sidebar_status.configure(text=f"●  {status.get('state_text') or '尚未检查'}", fg=color)
+        self.status_hint.configure(text=status.get("network_profile") or "等待连接 GDUT 网络")
+        self.sidebar_status.configure(text=f"●  {state_text}", fg=color)
         self.stat_vars["monitor"].set("正在运行" if status.get("monitor_running") else "未运行")
         self.stat_vars["account"].set(status.get("last_success_account") or "—")
         self.stat_vars["check"].set(local_time(status.get("last_check_at", "")))
-        for key, value in (("adapter", status.get("adapter_name")), ("profile", status.get("network_profile")),
-                           ("ip", status.get("source_ip")), ("mac", status.get("adapter_mac")), ("error", status.get("last_error"))):
+        for key, value in (
+            ("adapter", status.get("adapter_name")),
+            ("profile", status.get("network_profile")),
+            ("ip", status.get("source_ip")),
+            ("error", status.get("last_error")),
+        ):
             self.connection_vars[key].set(value or "—")
 
     def check_updates(self):
-        self.update_button.configure(state="disabled"); self.update_message.configure(text="正在连接 GitHub 检查更新……"); self.update_progress.configure(mode="indeterminate"); self.update_progress.start(10)
+        self.update_button.configure(state="disabled")
+        self.update_message.configure(text="正在检查更新……", fg=MUTED)
+        self.update_progress.configure(mode="indeterminate")
+        if not self.update_progress.winfo_ismapped():
+            self.update_progress.pack(fill="x", pady=(2, 0))
+        self.update_progress.start(10)
+
         def worker():
-            info = check_latest_release(); self.after(0, lambda: self.finish_update_check(info))
+            info = check_latest_release()
+            self.after(0, lambda: self.finish_update_check(info))
+
         threading.Thread(target=worker, daemon=True).start()
 
-    def finish_update_check(self, info):
-        self.update_progress.stop(); self.update_progress.configure(mode="determinate", value=0); self.update_button.configure(state="normal")
-        self._update_info = info; self.render_update_status(info.__dict__)
+    def finish_update_check(self, info: UpdateInfo):
+        self.update_progress.stop()
+        self.update_progress.configure(mode="determinate", value=0)
+        self.update_progress.pack_forget()
+        self.update_button.configure(state="normal")
+        self._update_info = info
+        self.render_update_status(info.__dict__)
 
-    def render_update_status(self, data):
-        if not data: return
-        latest, error = data.get("latest_version", APP_VERSION), data.get("error", "")
-        self.update_title.configure(text=f"当前 {APP_VERSION}  ·  最新 {latest}")
+    def render_update_status(self, data: dict):
+        if not data or not hasattr(self, "update_title"):
+            return
+        latest = data.get("latest_version", APP_VERSION)
+        error = data.get("error", "")
+        self.update_title.configure(text=f"软件更新 · v{APP_VERSION}")
         if error:
-            self.update_message.configure(text=error, fg=DANGER); self.install_button.configure(state="disabled")
+            self.update_message.configure(text=error, fg=DANGER)
+            self.install_button.pack_forget()
         elif data.get("available"):
-            self.update_message.configure(text=f"版本 {latest} 已发布。下载后将核对 SHA-256，安装前需要你确认。", fg=TEXT)
+            self.update_message.configure(text=f"发现新版本 {latest}", fg=TEXT)
             self.install_button.configure(state="normal")
+            if not self.install_button.winfo_ismapped():
+                self.install_button.pack(anchor="e", pady=(7, 0))
         else:
-            self.update_message.configure(text=f"已是最新版本。上次检查：{local_time(data.get('checked_at', ''))}", fg=SUCCESS)
-            self.install_button.configure(state="disabled")
+            self.update_message.configure(
+                text=f"已是最新版本 · {local_time(data.get('checked_at', ''))}", fg=SUCCESS
+            )
+            self.install_button.pack_forget()
 
     def download_and_install(self):
         info = self._update_info
-        if not info or not info.available: return self.check_updates()
-        if not messagebox.askyesno("确认下载", f"将从项目 GitHub Release 下载版本 {info.latest_version}，完成 SHA-256 校验后安装。继续吗？"):
+        if not info or not info.available:
+            self.check_updates()
             return
-        self.install_button.configure(state="disabled"); self.update_message.configure(text="正在下载新版……", fg=TEXT)
+        if not messagebox.askyesno(
+            "下载更新",
+            f"下载版本 {info.latest_version} 并在校验通过后安装吗？",
+            parent=self,
+        ):
+            return
+        self.install_button.configure(state="disabled")
+        self.update_message.configure(text="正在下载新版……", fg=MUTED)
+        self.update_progress.configure(mode="determinate", value=0)
+        if not self.update_progress.winfo_ismapped():
+            self.update_progress.pack(fill="x", pady=(2, 0))
+
         def progress(done, total):
             value = done * 100 / total if total else 0
             self.after(0, lambda: self.update_progress.configure(value=value))
+
         def worker():
-            try: path, error = download_update(info, progress), None
-            except Exception as exc: path, error = None, exc
+            try:
+                path, error = download_update(info, progress), None
+            except Exception as exc:
+                path, error = None, exc
             self.after(0, lambda: self.download_finished(path, error))
+
         threading.Thread(target=worker, daemon=True).start()
 
-    def download_finished(self, path, error):
+    def download_finished(self, path: Path | None, error: Exception | None):
         if error:
-            self.update_message.configure(text=str(error), fg=DANGER); self.install_button.configure(state="normal"); return
-        if not messagebox.askyesno("校验通过", "新版已下载并通过 SHA-256 校验。现在安装吗？程序将关闭，失败时会恢复旧版。"):
-            self.update_message.configure(text=f"已下载到 {path}，稍后可再次安装。", fg=SUCCESS); self.install_button.configure(state="normal"); return
-        launch_update_installer(path); self.destroy()
+            self.update_progress.pack_forget()
+            self.update_message.configure(text=str(error), fg=DANGER)
+            self.install_button.configure(state="normal")
+            return
+        self.update_progress.pack_forget()
+        if not messagebox.askyesno(
+            "安装更新",
+            "新版已下载并通过校验。现在关闭程序并安装吗？",
+            parent=self,
+        ):
+            self.update_message.configure(text="新版已下载，可稍后安装", fg=SUCCESS)
+            self.install_button.configure(state="normal")
+            return
+        launch_update_installer(path)
+        self.destroy()
 
     def finish_install(self):
+        """Finish installation silently; the live status on the overview is the feedback."""
         try:
             config = load_config()
-            if config.get("autostart_enabled", True): set_autostart(True); start_monitor()
-            messagebox.showinfo("安装完成", "已安装到当前用户目录，并启用静默后台监控。")
-        except Exception as exc: messagebox.showerror("安装未完成", str(exc))
+            if config.get("autostart_enabled", True):
+                set_autostart(True)
+                start_monitor()
+            self.after(700, lambda: self.update_status_display(load_status()))
+        except Exception as exc:
+            self.status_var.set("后台启动失败")
+            self.status_hint.configure(text=str(exc))
 
     def uninstall_app(self):
-        if not messagebox.askyesno("卸载程序", "确定删除开机任务并卸载程序吗？"): return
-        remove_data = messagebox.askyesno("删除个人数据", "是否同时删除加密账号、设置和日志？选择“否”可供以后恢复。")
+        if not messagebox.askyesno("卸载程序", "确定卸载程序吗？", parent=self):
+            return
+        remove_data = messagebox.askyesno(
+            "删除个人数据",
+            "是否同时删除账号、设置和日志？选择“否”可在以后继续使用。",
+            parent=self,
+        )
         try:
-            set_autostart(False); stop_monitor(); schedule_self_removal(remove_data); self.destroy()
-        except Exception as exc: messagebox.showerror("卸载失败", str(exc))
+            set_autostart(False)
+            stop_monitor()
+            schedule_self_removal(remove_data)
+            self.destroy()
+        except Exception as exc:
+            messagebox.showerror("卸载失败", str(exc), parent=self)

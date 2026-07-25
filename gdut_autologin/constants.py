@@ -7,7 +7,7 @@ import sys
 
 APP_NAME = "GDUT 校园网自动登录"
 APP_ID = "GDUTAutoLogin"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 TASK_NAME = "GDUT Auto Login"
 MUTEX_MONITOR = "Local\\GDUT_AutoLogin_Monitor_V2"
 MUTEX_ACTION = "Local\\GDUT_AutoLogin_Action_V2"
