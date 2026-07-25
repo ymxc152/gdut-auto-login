@@ -8,12 +8,15 @@ import subprocess
 import sys
 import time
 
+import psutil
+
 from .constants import (
     EXECUTABLE,
     INSTALL_DIR,
     INSTALLED_EXE,
     IS_FROZEN,
     MUTEX_ACTION,
+    PID_PATH,
     START_MENU_SHORTCUT,
     TASK_NAME,
 )
@@ -101,7 +104,27 @@ def scheduled_task_running() -> bool:
     return result.stdout.strip().lower() == "running"
 
 
-def start_monitor() -> None:
+def monitor_process_running() -> bool:
+    """Return whether the PID file still points to this app's monitor process."""
+    try:
+        pid = int(PID_PATH.read_text(encoding="ascii").strip())
+        process = psutil.Process(pid)
+        if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+            return False
+        return "--monitor" in process.cmdline()
+    except (OSError, ValueError, psutil.Error):
+        return False
+
+
+def _record_monitor_running(running: bool) -> None:
+    from .storage import load_status, save_status
+
+    status = load_status()
+    status["monitor_running"] = running
+    save_status(status)
+
+
+def start_monitor() -> bool:
     result = hidden_run(
         [
             "powershell.exe",
@@ -114,6 +137,12 @@ def start_monitor() -> None:
     time.sleep(0.5)
     if not scheduled_task_running():
         hidden_popen(current_launch_argv("--monitor"), creationflags=DETACHED_PROCESS)
+    for _attempt in range(12):
+        if monitor_process_running():
+            _record_monitor_running(True)
+            return True
+        time.sleep(0.15)
+    return False
 
 
 def stop_monitor() -> None:
@@ -126,14 +155,26 @@ def stop_monitor() -> None:
             f"Stop-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue",
         ]
     )
-    from .constants import PID_PATH
-
-    if PID_PATH.exists():
+    if monitor_process_running():
         try:
             pid = int(PID_PATH.read_text(encoding="ascii").strip())
-            hidden_run(["taskkill.exe", "/PID", str(pid), "/F"], timeout=10)
+            hidden_run(["taskkill.exe", "/PID", str(pid), "/T", "/F"], timeout=10)
         except (OSError, ValueError):
             pass
+    for _attempt in range(10):
+        if not monitor_process_running():
+            break
+        time.sleep(0.1)
+    try:
+        PID_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+    _record_monitor_running(False)
+
+
+def restart_monitor() -> bool:
+    stop_monitor()
+    return start_monitor()
 
 
 def show_notification(title: str, message: str) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import http.client
 import json
+import locale
 import re
 import socket
 import subprocess
@@ -31,6 +32,42 @@ class AdapterInfo:
 
 def normalize_mac(value: str) -> str:
     return re.sub(r"[^0-9A-F]", "", str(value).upper())
+
+
+def parse_wlan_interfaces(output: str) -> dict[str, list[str]]:
+    """Extract current SSIDs by adapter MAC from localized netsh output."""
+    profiles: dict[str, list[str]] = {}
+    current_mac = ""
+    mac_pattern = re.compile(r"(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}")
+    ssid_pattern = re.compile(r"^\s*SSID\s*:\s*(.*?)\s*$", re.IGNORECASE)
+    for line in output.splitlines():
+        mac_match = mac_pattern.search(line)
+        if mac_match and "bssid" not in line.casefold():
+            current_mac = normalize_mac(mac_match.group(0))
+        ssid_match = ssid_pattern.match(line)
+        if not ssid_match or not current_mac:
+            continue
+        ssid = ssid_match.group(1).strip()
+        if ssid:
+            profiles.setdefault(current_mac, []).append(ssid)
+        current_mac = ""
+    return profiles
+
+
+def _windows_wifi_profiles() -> dict[str, list[str]]:
+    try:
+        result = subprocess.run(
+            ["netsh.exe", "wlan", "show", "interfaces"],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            capture_output=True,
+            timeout=8,
+        )
+        if result.returncode != 0:
+            return {}
+        output = result.stdout.decode(locale.getpreferredencoding(False), errors="replace")
+        return parse_wlan_interfaces(output)
+    except (OSError, subprocess.SubprocessError):
+        return {}
 
 
 def _windows_network_metadata() -> tuple[dict[str, dict], dict[int, list[str]]]:
@@ -76,6 +113,7 @@ def list_adapters() -> list[AdapterInfo]:
     addresses = psutil.net_if_addrs()
     stats = psutil.net_if_stats()
     metadata_by_mac, profiles_by_index = _windows_network_metadata()
+    wifi_profiles_by_mac = _windows_wifi_profiles()
     virtual_words = (
         "vmware",
         "virtualbox",
@@ -101,6 +139,10 @@ def list_adapters() -> list[AdapterInfo]:
             word in lowered for word in virtual_words
         )
         is_up = bool(stats.get(name) and stats[name].isup)
+        profile_names = list(profiles_by_index.get(interface_index, []))
+        for profile_name in wifi_profiles_by_mac.get(normalize_mac(mac), []):
+            if profile_name.casefold() not in {value.casefold() for value in profile_names}:
+                profile_names.append(profile_name)
         adapters.append(
             AdapterInfo(
                 name=name,
@@ -110,7 +152,7 @@ def list_adapters() -> list[AdapterInfo]:
                 physical=physical,
                 interface_index=interface_index,
                 description=str(metadata.get("InterfaceDescription") or ""),
-                profile_names=profiles_by_index.get(interface_index, []),
+                profile_names=profile_names,
             )
         )
     return sorted(adapters, key=lambda item: (not item.physical, item.name.lower()))

@@ -28,12 +28,20 @@ from .updates import (
     launch_update_installer,
     load_update_status,
 )
-from .windows import schedule_self_removal, set_autostart, start_monitor, stop_monitor
+from .windows import (
+    monitor_process_running,
+    restart_monitor,
+    schedule_self_removal,
+    set_autostart,
+    start_monitor,
+    stop_monitor,
+)
 
 
 BG = "#F5F7FA"
 SIDEBAR = "#172033"
 SIDEBAR_ACTIVE = "#2B3954"
+SIDEBAR_HOVER = "#202C43"
 CARD = "#FFFFFF"
 TEXT = "#172033"
 MUTED = "#697386"
@@ -52,7 +60,7 @@ STATUS_COLORS = {
     "unexpected_response": DANGER,
     "adapter_missing": MUTED,
     "adapter_down": MUTED,
-    "no_ip": WARNING,
+    "no_ip": MUTED,
     "login_failed": DANGER,
     "busy": PRIMARY,
     "unknown": MUTED,
@@ -190,6 +198,63 @@ class ScrollablePanel(tk.Frame):
     def clear(self):
         for child in self.inner.winfo_children():
             child.destroy()
+
+
+class SidebarNavItem(tk.Frame):
+    def __init__(self, parent, icon: str, title: str, command):
+        super().__init__(parent, bg=SIDEBAR, cursor="hand2")
+        self.command = command
+        self.active = False
+        self.icon_label = tk.Label(
+            self,
+            text=icon,
+            width=2,
+            anchor="center",
+            bg=SIDEBAR,
+            fg="#C7CFDD",
+            font=("Segoe MDL2 Assets", 11),
+            cursor="hand2",
+        )
+        self.icon_label.pack(side="left", padx=(13, 9), pady=12)
+        self.title_label = tk.Label(
+            self,
+            text=title,
+            anchor="w",
+            bg=SIDEBAR,
+            fg="#C7CFDD",
+            font=("Microsoft YaHei UI", 9),
+            cursor="hand2",
+        )
+        self.title_label.pack(side="left", fill="x", expand=True, padx=(0, 12), pady=12)
+        for widget in (self, self.icon_label, self.title_label):
+            widget.bind("<Button-1>", lambda _event: self.command())
+            widget.bind("<Enter>", self._enter)
+            widget.bind("<Leave>", self._leave)
+
+    def _paint(self, background: str, foreground: str):
+        self.configure(bg=background)
+        self.icon_label.configure(bg=background, fg=foreground)
+        self.title_label.configure(bg=background, fg=foreground)
+
+    def _enter(self, _event=None):
+        if not self.active:
+            self._paint(SIDEBAR_HOVER, "white")
+
+    def _leave(self, _event=None):
+        self.after_idle(self._restore_if_pointer_left)
+
+    def _restore_if_pointer_left(self):
+        pointer_x, pointer_y = self.winfo_pointerxy()
+        inside = (
+            self.winfo_rootx() <= pointer_x < self.winfo_rootx() + self.winfo_width()
+            and self.winfo_rooty() <= pointer_y < self.winfo_rooty() + self.winfo_height()
+        )
+        if not inside and not self.active:
+            self._paint(SIDEBAR, "#C7CFDD")
+
+    def set_active(self, active: bool):
+        self.active = active
+        self._paint(SIDEBAR_ACTIVE if active else SIDEBAR, "white" if active else "#C7CFDD")
 
 
 class AccountDialog(tk.Toplevel):
@@ -357,10 +422,10 @@ class FirstRunDialog(tk.Toplevel):
 
 class GDUTApp(tk.Tk):
     NAV = [
-        ("overview", "概览", "●"),
-        ("accounts", "账号", "◎"),
-        ("logs", "日志", "≡"),
-        ("settings", "设置", "⚙"),
+        ("overview", "概览", "\ue80f"),
+        ("accounts", "账号", "\ue77b"),
+        ("logs", "日志", "\ue8fd"),
+        ("settings", "设置", "\ue713"),
     ]
 
     def __init__(self, first_run: bool = False):
@@ -372,9 +437,11 @@ class GDUTApp(tk.Tk):
         self.database = EventDatabase()
         self.adapters: list[AdapterInfo] = []
         self._busy = False
+        self._monitor_busy = False
+        self._monitor_running = False
         self._update_info: UpdateInfo | None = None
         self.pages: dict[str, tk.Frame] = {}
-        self.nav_buttons: dict[str, tk.Button] = {}
+        self.nav_buttons: dict[str, SidebarNavItem] = {}
         self._configure_style()
         self._build_shell()
         self.show_page("overview")
@@ -402,10 +469,12 @@ class GDUTApp(tk.Tk):
             lightcolor=BORDER,
             darkcolor=BORDER,
             padding=(10, 6),
+            arrowsize=22,
         )
         style.map(
             "Modern.TCombobox",
             fieldbackground=[("readonly", "white")],
+            foreground=[("readonly", TEXT), ("focus", TEXT)],
             selectbackground=[("readonly", "white")],
             selectforeground=[("readonly", TEXT)],
             bordercolor=[("focus", PRIMARY)],
@@ -438,24 +507,11 @@ class GDUTApp(tk.Tk):
         nav = tk.Frame(sidebar, bg=SIDEBAR, padx=10)
         nav.pack(fill="x", pady=8)
         for key, title, icon in self.NAV:
-            button = tk.Button(
-                nav,
-                text=f"  {icon}    {title}",
-                anchor="w",
-                bg=SIDEBAR,
-                fg="#CBD2DE",
-                activebackground=SIDEBAR_ACTIVE,
-                activeforeground="white",
-                relief="flat",
-                borderwidth=0,
-                cursor="hand2",
-                padx=14,
-                pady=12,
-                font=("Microsoft YaHei UI", 10),
-                command=lambda page=key: self.show_page(page),
+            item = SidebarNavItem(
+                nav, icon, title, lambda page=key: self.show_page(page)
             )
-            button.pack(fill="x", pady=3)
-            self.nav_buttons[key] = button
+            item.pack(fill="x", pady=3)
+            self.nav_buttons[key] = item
 
         footer = tk.Frame(sidebar, bg=SIDEBAR, padx=22, pady=22)
         footer.pack(side="bottom", fill="x")
@@ -476,11 +532,8 @@ class GDUTApp(tk.Tk):
         for page in self.pages.values():
             page.pack_forget()
         self.pages[key].pack(fill="both", expand=True)
-        for name, button in self.nav_buttons.items():
-            button.configure(
-                bg=SIDEBAR_ACTIVE if name == key else SIDEBAR,
-                fg="white" if name == key else "#CBD2DE",
-            )
+        for name, item in self.nav_buttons.items():
+            item.set_active(name == key)
         if key == "accounts":
             self.refresh_accounts()
         elif key == "logs":
@@ -673,14 +726,34 @@ class GDUTApp(tk.Tk):
             network_row, state="readonly", style="Modern.TCombobox"
         )
         self.adapter_combo.pack(side="left", fill="x", expand=True)
-        flat_button(network_row, "刷新", self.refresh_settings_adapters).pack(
+        flat_button(
+            network_row,
+            "刷新",
+            lambda: self.refresh_settings_adapters(prefer_active=True),
+        ).pack(
             side="left", padx=(8, 0)
         )
         self.keyword = tk.StringVar(value="gdut")
 
         monitor = self.card(body)
         monitor.pack(fill="x", pady=(0, 12))
-        text_label(monitor, "后台检查", 11, "bold").pack(anchor="w", pady=(0, 10))
+        monitor_header = tk.Frame(monitor, bg=CARD)
+        monitor_header.pack(fill="x", pady=(0, 10))
+        title_group = tk.Frame(monitor_header, bg=CARD)
+        title_group.pack(side="left")
+        text_label(title_group, "后台检查", 11, "bold").pack(anchor="w")
+        self.monitor_state_label = text_label(title_group, "正在读取状态", 8, color=MUTED)
+        self.monitor_state_label.pack(anchor="w", pady=(3, 0))
+        monitor_actions = tk.Frame(monitor_header, bg=CARD)
+        monitor_actions.pack(side="right")
+        self.restart_monitor_button = flat_button(
+            monitor_actions, "重启后台", lambda: self.manage_monitor("restart")
+        )
+        self.restart_monitor_button.pack(side="right")
+        self.monitor_toggle_button = flat_button(
+            monitor_actions, "启动后台", lambda: self.manage_monitor("start"), "primary"
+        )
+        self.monitor_toggle_button.pack(side="right", padx=(0, 8))
         values = tk.Frame(monitor, bg=CARD)
         values.pack(fill="x")
         self.check_interval = tk.IntVar()
@@ -751,7 +824,9 @@ class GDUTApp(tk.Tk):
         self.install_button = flat_button(update, "下载并安装", self.download_and_install, "primary")
 
 
-    def fill_adapters(self, combo: ttk.Combobox) -> list[AdapterInfo]:
+    def fill_adapters(
+        self, combo: ttk.Combobox, prefer_active: bool = False
+    ) -> list[AdapterInfo]:
         adapters = list_adapters()
         combo["values"] = [
             f"{item.name} · {', '.join(item.profile_names) or '未识别网络'} · "
@@ -763,20 +838,48 @@ class GDUTApp(tk.Tk):
             configured = str(config.get("adapter_mac", "")).replace("-", "").replace(":", "").upper()
             keyword = str(config.get("network_keyword", "gdut")).casefold()
             selected = 0
-            for index, adapter in enumerate(adapters):
-                mac = adapter.mac.replace("-", "").replace(":", "").upper()
-                if (configured and mac == configured) or (
-                    not configured
-                    and any(keyword in name.casefold() for name in [adapter.name, *adapter.profile_names])
-                ):
-                    selected = index
-                    break
+            if prefer_active:
+                active_matches = [
+                    index
+                    for index, adapter in enumerate(adapters)
+                    if adapter.status == "已连接"
+                    and adapter.ipv4
+                    and any(
+                        keyword in name.casefold()
+                        for name in [adapter.name, *adapter.profile_names]
+                    )
+                ]
+                if active_matches:
+                    selected = active_matches[0]
+            else:
+                for index, adapter in enumerate(adapters):
+                    mac = adapter.mac.replace("-", "").replace(":", "").upper()
+                    if (configured and mac == configured) or (
+                        not configured
+                        and any(
+                            keyword in name.casefold()
+                            for name in [adapter.name, *adapter.profile_names]
+                        )
+                    ):
+                        selected = index
+                        break
             combo.current(selected)
+        else:
+            combo.set("")
         return adapters
 
-    def refresh_settings_adapters(self):
-        self.adapters = self.fill_adapters(self.adapter_combo)
-        self.settings_feedback.set("已刷新网络列表")
+    def refresh_settings_adapters(self, prefer_active: bool = False):
+        self.adapters = self.fill_adapters(self.adapter_combo, prefer_active=prefer_active)
+        selected = self.adapter_combo.current()
+        if 0 <= selected < len(self.adapters):
+            adapter = self.adapters[selected]
+            network_name = next(
+                (name for name in adapter.profile_names if "gdut" in name.casefold()),
+                adapter.name,
+            )
+            self.settings_feedback.set(f"已刷新并选中 {network_name}")
+        else:
+            self.settings_feedback.set("未发现可用网络")
         self.settings_feedback_label.configure(fg=MUTED)
 
     def reload_all(self):
@@ -922,6 +1025,72 @@ class GDUTApp(tk.Tk):
             self.settings_feedback.set(f"保存失败：{exc}")
             self.settings_feedback_label.configure(fg=DANGER)
 
+    def update_monitor_controls(self, running: bool):
+        self._monitor_running = running
+        if not hasattr(self, "monitor_toggle_button"):
+            return
+        if self._monitor_busy:
+            self.monitor_toggle_button.configure(state="disabled")
+            self.restart_monitor_button.configure(state="disabled")
+            return
+        self.monitor_toggle_button.configure(
+            text="停止后台" if running else "启动后台",
+            command=lambda: self.manage_monitor("stop" if running else "start"),
+            state="normal",
+            bg="#FFF0F0" if running else PRIMARY,
+            fg=DANGER if running else "white",
+            activebackground="#FFE1E1" if running else PRIMARY_HOVER,
+            activeforeground=DANGER if running else "white",
+        )
+        self.restart_monitor_button.configure(state="normal")
+        self.monitor_state_label.configure(
+            text="后台服务正在运行" if running else "后台服务已停止",
+            fg=SUCCESS if running else MUTED,
+        )
+
+    def manage_monitor(self, action: str):
+        if self._monitor_busy:
+            return
+        self._monitor_busy = True
+        labels = {"start": "正在启动后台……", "stop": "正在停止后台……", "restart": "正在重启后台……"}
+        self.settings_feedback.set(labels[action])
+        self.settings_feedback_label.configure(fg=MUTED)
+        self.update_monitor_controls(self._monitor_running)
+
+        def worker():
+            try:
+                if action == "start":
+                    running = start_monitor()
+                elif action == "stop":
+                    stop_monitor()
+                    running = False
+                else:
+                    running = restart_monitor()
+                if action != "stop" and not running:
+                    raise RuntimeError("后台服务未能启动，请查看日志")
+                error = None
+            except Exception as exc:
+                running, error = monitor_process_running(), exc
+            self.after(0, lambda: self.monitor_action_finished(action, running, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def monitor_action_finished(self, action: str, running: bool, error: Exception | None):
+        self._monitor_busy = False
+        self.update_monitor_controls(running)
+        if error:
+            self.settings_feedback.set(f"后台操作失败：{error}")
+            self.settings_feedback_label.configure(fg=DANGER)
+        else:
+            messages = {"start": "后台服务已启动", "stop": "后台服务已停止", "restart": "后台服务已重启"}
+            self.settings_feedback.set(messages[action])
+            self.settings_feedback_label.configure(fg=SUCCESS)
+            self.after(2500, lambda: self.settings_feedback.set(""))
+        status = load_status()
+        status["monitor_running"] = running
+        self.update_status_display(status)
+        self.refresh_logs()
+
     def selected_log_filters(self) -> tuple[int, str]:
         day_map = {"今天": 1, "最近 7 天": 7, "最近 30 天": 30, "全部时间": 0}
         level = "" if self.log_level.get() == "全部级别" else self.log_level.get()
@@ -998,7 +1167,10 @@ class GDUTApp(tk.Tk):
 
         def worker():
             try:
-                result, error = perform_check(login_if_needed=login, monitor_running=True), None
+                result, error = perform_check(
+                    login_if_needed=login,
+                    monitor_running=monitor_process_running(),
+                ), None
             except Exception as exc:
                 result, error = {}, exc
             self.after(0, lambda: self.check_finished(result, error))
@@ -1018,7 +1190,9 @@ class GDUTApp(tk.Tk):
             self.refresh_logs()
 
     def poll_status(self):
-        self.update_status_display(load_status())
+        status = load_status()
+        status["monitor_running"] = monitor_process_running()
+        self.update_status_display(status)
         self.after(2500, self.poll_status)
 
     def update_status_display(self, status: dict):
@@ -1029,7 +1203,9 @@ class GDUTApp(tk.Tk):
         self.status_dot.configure(fg=color)
         self.status_hint.configure(text=status.get("network_profile") or "等待连接 GDUT 网络")
         self.sidebar_status.configure(text=f"●  {state_text}", fg=color)
-        self.stat_vars["monitor"].set("正在运行" if status.get("monitor_running") else "未运行")
+        monitor_running = bool(status.get("monitor_running"))
+        self.stat_vars["monitor"].set("正在运行" if monitor_running else "未运行")
+        self.update_monitor_controls(monitor_running)
         self.stat_vars["account"].set(status.get("last_success_account") or "—")
         self.stat_vars["check"].set(local_time(status.get("last_check_at", "")))
         for key, value in (

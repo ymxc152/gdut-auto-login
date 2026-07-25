@@ -22,12 +22,14 @@ STATUS_TEXT = {
     "portal_required": "需要校园网认证",
     "network_error": "无法访问网络",
     "unexpected_response": "网络响应异常",
-    "adapter_missing": "未找到指定网卡",
-    "adapter_down": "指定网卡未连接",
-    "no_ip": "指定网卡尚未获取校园网地址",
+    "adapter_missing": "等待连接 GDUT 网络",
+    "adapter_down": "等待连接 GDUT 网络",
+    "no_ip": "等待连接 GDUT 网络",
     "login_failed": "自动登录失败",
     "busy": "正在执行其他网络操作",
 }
+
+WAITING_STATES = frozenset(("adapter_missing", "adapter_down", "no_ip"))
 
 
 def utc_now() -> str:
@@ -73,7 +75,6 @@ def perform_check(login_if_needed: bool = True, monitor_running: bool = False) -
         adapter = select_adapter(config)
         if adapter is None:
             status.update({"state": "adapter_missing", "state_text": STATUS_TEXT["adapter_missing"]})
-            logger.warning("未找到名称或网络配置文件包含 GDUT 的指定网络接口")
             save_status(status)
             return status
         status.update({"adapter_name": adapter.name, "adapter_mac": adapter.mac})
@@ -141,7 +142,8 @@ def run_monitor() -> int:
                 status = perform_check(login_if_needed=True, monitor_running=True)
                 now = time.monotonic()
                 if (
-                    config.get("auto_check_updates", True)
+                    status.get("state") not in WAITING_STATES
+                    and config.get("auto_check_updates", True)
                     and now - last_update_check >= UPDATE_CHECK_INTERVAL_SECONDS
                 ):
                     last_update_check = now
@@ -177,7 +179,7 @@ def run_monitor() -> int:
                 state = status.get("state")
                 if state == "online":
                     sleep_seconds = int(config.get("check_interval_seconds", 30))
-                elif state in ("adapter_missing", "adapter_down", "no_ip"):
+                elif state in WAITING_STATES:
                     sleep_seconds = int(config.get("retry_interval_seconds", 15))
                 else:
                     sleep_seconds = int(config.get("login_cooldown_seconds", 60))

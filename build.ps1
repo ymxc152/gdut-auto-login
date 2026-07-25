@@ -17,7 +17,7 @@ python -m PyInstaller `
 
 $releaseDir = Join-Path $projectDir 'release'
 New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
-$releaseExe = Join-Path $releaseDir 'GDUTAutoLogin-1.1.1-win64.exe'
+$releaseExe = Join-Path $releaseDir 'GDUTAutoLogin-1.1.2-win64.exe'
 Copy-Item -LiteralPath .\dist\GDUTAutoLogin.exe -Destination $releaseExe -Force
 
 $selfTest = Join-Path $releaseDir 'self-test.json'
