@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import os
+import threading
 import time
 
-from .constants import MUTEX_MONITOR, PID_PATH, UPDATE_CHECK_INTERVAL_SECONDS
+from .constants import UPDATE_CHECK_INTERVAL_SECONDS
 from .network import adapter_source_ip, probe_network, select_adapter, try_authorized_accounts
 from .storage import (
     build_logger,
@@ -13,7 +13,7 @@ from .storage import (
     mask_account,
     save_status,
 )
-from .windows import NamedMutex, action_mutex, show_notification
+from .windows import action_mutex, show_notification
 from .updates import check_latest_release
 
 
@@ -27,6 +27,7 @@ STATUS_TEXT = {
     "no_ip": "等待所选网络接口获取 10 网段地址",
     "login_failed": "自动登录失败",
     "busy": "正在执行其他网络操作",
+    "paused": "自动登录已暂停",
 }
 
 WAITING_STATES = frozenset(("adapter_missing", "adapter_down", "no_ip"))
@@ -124,22 +125,46 @@ def perform_check(login_if_needed: bool = True, monitor_running: bool = False) -
         return status
 
 
-def run_monitor() -> int:
-    logger, database = build_logger("gdut-monitor")
-    with NamedMutex(MUTEX_MONITOR, timeout_ms=0) as instance:
-        if not instance.acquired:
-            return 0
-        PID_PATH.parent.mkdir(parents=True, exist_ok=True)
-        PID_PATH.write_text(str(os.getpid()), encoding="ascii")
-        logger.info("后台网络监控已启动")
+class MonitorThread(threading.Thread):
+    """Run the login monitor inside the GUI process until stopped."""
+
+    def __init__(self):
+        super().__init__(name="gdut-monitor", daemon=True)
+        self._stop_event = threading.Event()
+        self.on_status = None  # Optional callable(status: dict) for live UI updates.
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def _wait(self, seconds: int) -> None:
+        self._stop_event.wait(max(5, int(seconds)))
+
+    def run(self) -> int:
+        logger, database = build_logger("gdut-monitor")
+        logger.info("自动登录监控已启动")
         last_notification = 0.0
         last_update_check = 0.0
         notified_update_version = ""
         maintenance_counter = 0
         try:
-            while True:
+            while not self._stop_event.is_set():
                 config = load_config()
+                if not config.get("auto_login_enabled", True):
+                    status = base_status()
+                    status.update(
+                        {
+                            "monitor_running": True,
+                            "state": "paused",
+                            "state_text": STATUS_TEXT["paused"],
+                        }
+                    )
+                    save_status(status)
+                    self._notify(status)
+                    self._wait(config.get("retry_interval_seconds", 15))
+                    continue
+
                 status = perform_check(login_if_needed=True, monitor_running=True)
+                self._notify(status)
                 now = time.monotonic()
                 if (
                     status.get("state") not in WAITING_STATES
@@ -183,15 +208,21 @@ def run_monitor() -> int:
                     sleep_seconds = int(config.get("retry_interval_seconds", 15))
                 else:
                     sleep_seconds = int(config.get("login_cooldown_seconds", 60))
-                time.sleep(max(5, sleep_seconds))
+                self._wait(sleep_seconds)
         except Exception as exc:
-            logger.exception("后台监控异常退出：%s", exc)
+            logger.exception("自动登录监控异常退出：%s", exc)
             return 1
         finally:
-            try:
-                PID_PATH.unlink(missing_ok=True)
-            except OSError:
-                pass
             status = base_status()
-            status.update({"monitor_running": False, "state_text": "后台监控已停止"})
+            status.update({"monitor_running": False, "state_text": "自动登录已停止"})
             save_status(status)
+            logger.info("自动登录监控已停止")
+        return 0
+
+    def _notify(self, status: dict) -> None:
+        callback = self.on_status
+        if callback:
+            try:
+                callback(status)
+            except Exception:
+                pass

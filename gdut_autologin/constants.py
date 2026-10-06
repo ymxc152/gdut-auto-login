@@ -7,10 +7,11 @@ import sys
 
 APP_NAME = "GDUT 校园网自动登录"
 APP_ID = "GDUTAutoLogin"
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.2.0"
 TASK_NAME = "GDUT Auto Login"
-MUTEX_MONITOR = "Local\\GDUT_AutoLogin_Monitor_V2"
+MUTEX_APP = "Local\\GDUT_AutoLogin_App_V1"
 MUTEX_ACTION = "Local\\GDUT_AutoLogin_Action_V2"
+EVENT_SHOW_WINDOW = "Local\\GDUT_AutoLogin_Show_V1"
 
 IS_FROZEN = bool(getattr(sys, "frozen", False))
 EXECUTABLE = Path(sys.executable).resolve() if IS_FROZEN else Path(sys.argv[0]).resolve()
@@ -25,7 +26,6 @@ CONFIG_PATH = DATA_DIR / "config.json"
 ACCOUNTS_PATH = DATA_DIR / "accounts.json"
 STATE_PATH = DATA_DIR / "state.json"
 STATUS_PATH = DATA_DIR / "status.json"
-PID_PATH = DATA_DIR / "monitor.pid"
 DATABASE_PATH = DATA_DIR / "events.db"
 UPDATE_DIR = DATA_DIR / "updates"
 UPDATE_STATUS_PATH = UPDATE_DIR / "update-status.json"
@@ -48,6 +48,8 @@ DEFAULT_CONFIG = {
     "notification_cooldown_seconds": 900,
     "notifications_enabled": True,
     "autostart_enabled": True,
+    "auto_login_enabled": True,
+    "close_to_tray_hinted": False,
     "log_max_mb": 20,
     "log_retention_days": 0,
     "auto_check_updates": True,

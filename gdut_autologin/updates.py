@@ -177,7 +177,7 @@ def _replace_with_retry(source: Path, target: Path, attempts: int = 40) -> None:
 
 
 def apply_update(target: Path, wait_pid: int, health_file: Path) -> int:
-    from .windows import create_start_menu_shortcut, start_monitor, stop_monitor
+    from .windows import create_start_menu_shortcut
 
     result_path = UPDATE_DIR / "last-install-result.json"
     target = target.resolve()
@@ -186,7 +186,6 @@ def apply_update(target: Path, wait_pid: int, health_file: Path) -> int:
     backup = target.with_suffix(".previous.exe")
     staged = target.with_suffix(".new.exe")
     try:
-        stop_monitor()
         for _ in range(120):
             try:
                 os.kill(wait_pid, 0)
@@ -215,7 +214,6 @@ def apply_update(target: Path, wait_pid: int, health_file: Path) -> int:
             raise RuntimeError("新版启动自检超时。")
         result = {"ok": True, "version": APP_VERSION, "updated_at": _utc_now(), "backup": str(backup)}
         result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        start_monitor()
         return 0
     except Exception as exc:
         try:

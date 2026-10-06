@@ -188,7 +188,7 @@ class AccountOrderTests(unittest.TestCase):
 
 
 class FirstRunTests(unittest.TestCase):
-    def test_disabling_autostart_still_starts_current_monitor(self):
+    def test_finish_saves_account_and_registers_autostart(self):
         dialog = MagicMock()
         dialog.adapter.current.return_value = 0
         dialog.account.get.return_value = "student"
@@ -201,10 +201,9 @@ class FirstRunTests(unittest.TestCase):
             gui, "save_config"
         ), patch.object(gui, "add_or_update_account"), patch.object(
             gui, "set_autostart"
-        ) as set_autostart, patch.object(gui, "start_monitor", return_value=True) as start_monitor:
+        ) as set_autostart:
             gui.FirstRunDialog.finish(dialog)
         set_autostart.assert_called_once_with(False)
-        start_monitor.assert_called_once_with()
         dialog.destroy.assert_called_once_with()
 
 
@@ -242,7 +241,7 @@ class UpdateCoreTests(unittest.TestCase):
     def test_update_info_defaults_to_current_version(self):
         info = UpdateInfo()
         self.assertFalse(info.available)
-        self.assertEqual(info.current_version, "1.1.3")
+        self.assertEqual(info.current_version, "1.2.0")
 
     def test_replace_with_retry_replaces_existing_file(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -254,35 +253,154 @@ class UpdateCoreTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), b"new")
 
 
-class MonitorControlTests(unittest.TestCase):
-    def test_monitor_pid_must_belong_to_monitor_process(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            pid_path = Path(temporary) / "monitor.pid"
-            pid_path.write_text("1234", encoding="ascii")
-            process = MagicMock()
-            process.is_running.return_value = True
-            process.status.return_value = "running"
-            with patch.object(windows, "PID_PATH", pid_path), patch.object(
-                windows.psutil, "Process", return_value=process
-            ):
-                process.cmdline.return_value = ["pythonw.exe", "app.py", "--monitor"]
-                self.assertTrue(windows.monitor_process_running())
-                process.cmdline.return_value = ["unrelated.exe"]
-                self.assertFalse(windows.monitor_process_running())
+class MonitorThreadTests(unittest.TestCase):
+    def test_thread_runs_checks_until_stopped(self):
+        import threading as threading_module
 
-    def test_stop_monitor_does_not_kill_stale_pid(self):
+        thread = service.MonitorThread()
+        calls = []
+
+        def fake_check(**kwargs):
+            calls.append(kwargs)
+            thread.stop()
+            return {"state": "online", "state_text": "ok"}
+
+        mutex = MagicMock()
+        mutex.__enter__.return_value = MagicMock(acquired=True)
+        with patch.object(service, "build_logger", return_value=(MagicMock(), MagicMock())), patch.object(
+            service, "action_mutex", return_value=mutex
+        ), patch.object(
+            service,
+            "load_config",
+            return_value={"auto_login_enabled": True, "check_interval_seconds": 30},
+        ), patch.object(service, "perform_check", side_effect=fake_check), patch.object(
+            service, "save_status"
+        ):
+            thread.start()
+            thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0]["monitor_running"])
+
+    def test_paused_state_skips_check(self):
+        import threading as threading_module
+
+        thread = service.MonitorThread()
+        timer = threading_module.Timer(0.2, thread.stop)
+        with patch.object(service, "build_logger", return_value=(MagicMock(), MagicMock())), patch.object(
+            service, "load_config", return_value={"auto_login_enabled": False}
+        ), patch.object(service, "perform_check") as check, patch.object(
+            service, "save_status"
+        ) as save_status:
+            timer.start()
+            thread.start()
+            thread.join(timeout=5)
+            timer.join()
+        self.assertFalse(thread.is_alive())
+        check.assert_not_called()
+        paused_states = [
+            call.args[0]
+            for call in save_status.call_args_list
+            if call.args and call.args[0].get("state") == "paused"
+        ]
+        self.assertTrue(paused_states)
+
+
+class SingleInstanceTests(unittest.TestCase):
+    def test_second_process_acquire_fails_until_released(self):
+        import threading as threading_module
+
+        # Use a dedicated test mutex so a live app instance cannot interfere.
+        patches = [
+            patch.object(windows, "MUTEX_APP", "Local\\GDUT_AutoLogin_App_TestV1"),
+            patch.object(windows, "EVENT_SHOW_WINDOW", "Local\\GDUT_AutoLogin_Show_TestV1"),
+        ]
+        for item in patches:
+            item.start()
+        self.addCleanup(lambda: [item.stop() for item in patches])
+        first = windows.acquire_single_instance()
+        try:
+            self.assertIsNotNone(first)
+            results = []
+            runner = threading_module.Thread(
+                target=lambda: results.append(windows.acquire_single_instance())
+            )
+            runner.start()
+            runner.join(timeout=5)
+            self.assertEqual(len(results), 1)
+            self.assertIsNone(results[0])
+        finally:
+            first.__exit__(None, None, None)
+        second = windows.acquire_single_instance()
+        try:
+            self.assertIsNotNone(second)
+        finally:
+            second.__exit__(None, None, None)
+
+
+class AutostartUpgradeTests(unittest.TestCase):
+    def test_legacy_task_without_hidden_args_is_reregistered(self):
+        for legacy in ("", "old.exe --monitor", "old.exe"):
+            calls = []
+            with patch.object(
+                windows, "scheduled_task_info", return_value=(True, legacy)
+            ), patch.object(
+                windows, "set_autostart", side_effect=lambda enabled: calls.append(enabled)
+            ):
+                windows.ensure_autostart_upgraded()
+            self.assertEqual(calls, [True], f"legacy args {legacy!r} should be upgraded")
+
+    def test_current_hidden_task_is_kept(self):
+        calls = []
+        with patch.object(
+            windows, "scheduled_task_info", return_value=(True, "app.exe --hidden")
+        ), patch.object(windows, "set_autostart", side_effect=lambda enabled: calls.append(enabled)):
+            windows.ensure_autostart_upgraded()
+        self.assertEqual(calls, [])
+
+    def test_scheduled_task_info_reads_arguments_property(self):
+        result = MagicMock()
+        result.stdout = "EXISTS|app.exe --hidden\n"
+        with patch.object(windows, "hidden_run", return_value=result):
+            exists, arguments = windows.scheduled_task_info()
+        self.assertTrue(exists)
+        self.assertEqual(arguments, "app.exe --hidden")
+
+    def test_missing_task_is_not_reregistered(self):
+        calls = []
+        with patch.object(
+            windows, "scheduled_task_info", return_value=(False, "")
+        ), patch.object(windows, "set_autostart", side_effect=lambda enabled: calls.append(enabled)):
+            windows.ensure_autostart_upgraded()
+        self.assertEqual(calls, [])
+
+
+class TerminateInstalledTests(unittest.TestCase):
+    def test_terminates_only_matching_executable(self):
         with tempfile.TemporaryDirectory() as temporary:
-            pid_path = Path(temporary) / "monitor.pid"
-            pid_path.write_text("1234", encoding="ascii")
-            with patch.object(windows, "PID_PATH", pid_path), patch.object(
-                windows, "monitor_process_running", return_value=False
-            ), patch.object(windows, "hidden_run") as hidden_run, patch.object(
-                windows, "_record_monitor_running"
-            ) as record_status:
-                windows.stop_monitor()
-            self.assertFalse(pid_path.exists())
-            self.assertEqual(hidden_run.call_count, 1)
-            record_status.assert_called_once_with(False)
+            installed = Path(temporary) / "GDUTAutoLogin.exe"
+            installed.write_bytes(b"x")
+            mine = MagicMock()
+            mine.info = {"pid": 123, "exe": str(installed)}
+            other = MagicMock()
+            other.info = {"pid": 456, "exe": r"C:\Windows\notepad.exe"}
+            with patch.object(windows, "IS_FROZEN", True), patch.object(
+                windows, "INSTALLED_EXE", installed
+            ), patch.object(windows.psutil, "process_iter", return_value=[mine, other]), patch.object(
+                windows, "time"
+            ) as fake_time:
+                stopped = windows.terminate_running_installed()
+            self.assertEqual(stopped, 1)
+            mine.terminate.assert_called_once_with()
+            other.terminate.assert_not_called()
+            fake_time.sleep.assert_called_once_with(1.5)
+
+    def test_noop_when_not_frozen(self):
+        with patch.object(windows, "IS_FROZEN", False), patch.object(
+            windows.psutil, "process_iter"
+        ) as process_iter:
+            self.assertEqual(windows.terminate_running_installed(), 0)
+        process_iter.assert_not_called()
 
 
 class MonitorWaitingTests(unittest.TestCase):

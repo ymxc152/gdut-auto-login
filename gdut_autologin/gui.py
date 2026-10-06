@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import queue
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .constants import APP_NAME, APP_VERSION
 from .network import AdapterInfo, connected_physical_adapters, list_adapters
-from .service import perform_check
+from .service import MonitorThread, perform_check
 from .storage import (
     EventDatabase,
     add_or_update_account,
@@ -31,12 +32,10 @@ from .updates import (
     load_update_status,
 )
 from .windows import (
-    monitor_process_running,
-    restart_monitor,
+    ShowWindowWatcher,
+    TrayIcon,
     schedule_self_removal,
     set_autostart,
-    start_monitor,
-    stop_monitor,
 )
 
 
@@ -64,6 +63,7 @@ STATUS_COLORS = {
     "adapter_down": MUTED,
     "no_ip": MUTED,
     "login_failed": DANGER,
+    "paused": MUTED,
     "busy": PRIMARY,
     "unknown": MUTED,
 }
@@ -369,7 +369,7 @@ class FirstRunDialog(tk.Toplevel):
         body = tk.Frame(self, bg=CARD, padx=36, pady=30)
         body.pack(fill="both", expand=True)
         text_label(body, "欢迎使用 GDUT 自动登录", 20, "bold").pack(anchor="w")
-        text_label(body, "完成下面三项设置，之后程序会在后台自动工作。", 9, color=MUTED).pack(
+        text_label(body, "完成下面三项设置，程序就会常驻系统托盘自动工作。", 9, color=MUTED).pack(
             anchor="w", pady=(5, 22)
         )
         text_label(body, "1. 选择已连接的网络接口", 9, "bold").pack(anchor="w")
@@ -400,7 +400,7 @@ class FirstRunDialog(tk.Toplevel):
             ),
         )
         self.autostart = tk.BooleanVar(value=True)
-        check_box(body, "登录 Windows 后自动在后台运行", self.autostart).pack(anchor="w")
+        check_box(body, "开机自动启动，隐藏到托盘运行", self.autostart).pack(anchor="w")
         tk.Label(
             body,
             textvariable=self.error,
@@ -442,8 +442,6 @@ class FirstRunDialog(tk.Toplevel):
             add_or_update_account(account, password)
             self.password.set("")
             set_autostart(self.autostart.get())
-            if not start_monitor():
-                raise RuntimeError("后台服务未能启动，请稍后在设置中重试。")
             self.destroy()
             self.app.reload_all()
             self.app.run_check(True)
@@ -459,7 +457,7 @@ class GDUTApp(tk.Tk):
         ("settings", "设置", "\ue713"),
     ]
 
-    def __init__(self, first_run: bool = False):
+    def __init__(self, first_run: bool = False, start_hidden: bool = False):
         super().__init__()
         self.title(f"{APP_NAME}  {APP_VERSION}")
         self.geometry("1120x740")
@@ -469,10 +467,15 @@ class GDUTApp(tk.Tk):
         self.adapters: list[AdapterInfo] = []
         self._busy = False
         self._monitor_busy = False
-        self._monitor_running = False
+        self._auto_login_enabled = bool(load_config().get("auto_login_enabled", True))
         self._loading_settings = False
         self._settings_apply_after: str | None = None
         self._update_info: UpdateInfo | None = None
+        self._tray: TrayIcon | None = None
+        self._tray_tooltip = ""
+        self._status_queue: queue.Queue = queue.Queue()
+        self.monitor = MonitorThread()
+        self.monitor.on_status = self._status_queue.put
         self.pages: dict[str, tk.Frame] = {}
         self.nav_buttons: dict[str, SidebarNavItem] = {}
         self._configure_style()
@@ -480,11 +483,17 @@ class GDUTApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.close_window)
         self.show_page("overview")
         self.reload_all()
-        self.after(1200, self.poll_status)
+        self.after(1000, self.poll_status)
+        self._show_watcher = ShowWindowWatcher(lambda: self.after(0, self.show_window))
+        self._show_watcher.start()
+        self._setup_tray()
+        self.monitor.start()
         if not load_accounts() or not load_config().get("adapter_mac"):
             self.after(300, lambda: FirstRunDialog(self))
         elif first_run:
             self.after(300, self.finish_install)
+        elif start_hidden:
+            self.withdraw()
 
     def _configure_style(self):
         style = ttk.Style(self)
@@ -627,7 +636,7 @@ class GDUTApp(tk.Tk):
         stats.pack(fill="x", pady=14)
         self.stat_vars = {key: tk.StringVar(value="—") for key in ("monitor", "account", "check")}
         for index, (title, key) in enumerate(
-            (("后台服务", "monitor"), ("上次账号", "account"), ("最后检查", "check"))
+            (("自动登录", "monitor"), ("上次账号", "account"), ("最后检查", "check"))
         ):
             box = self.card(stats, 17, 14)
             box.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 7, 0))
@@ -737,7 +746,7 @@ class GDUTApp(tk.Tk):
 
     def _build_settings(self):
         page = self.pages["settings"]
-        self.page_header(page, "设置", "网络、后台、日志与更新")
+        self.page_header(page, "设置", "网络、自动登录、日志与更新")
         actions = tk.Frame(page, bg=BG)
         actions.pack(side="bottom", fill="x", pady=(10, 0))
         self.settings_feedback = tk.StringVar()
@@ -778,23 +787,13 @@ class GDUTApp(tk.Tk):
         )
         monitor = self.card(body)
         monitor.pack(fill="x", pady=(0, 12))
-        monitor_header = tk.Frame(monitor, bg=CARD)
-        monitor_header.pack(fill="x", pady=(0, 10))
-        title_group = tk.Frame(monitor_header, bg=CARD)
-        title_group.pack(side="left")
-        text_label(title_group, "后台检查", 11, "bold").pack(anchor="w")
-        self.monitor_state_label = text_label(title_group, "正在读取状态", 8, color=MUTED)
-        self.monitor_state_label.pack(anchor="w", pady=(3, 0))
-        monitor_actions = tk.Frame(monitor_header, bg=CARD)
-        monitor_actions.pack(side="right")
-        self.restart_monitor_button = flat_button(
-            monitor_actions, "重启后台", lambda: self.manage_monitor("restart")
-        )
-        self.restart_monitor_button.pack(side="right")
-        self.monitor_toggle_button = flat_button(
-            monitor_actions, "启动后台", lambda: self.manage_monitor("start"), "primary"
-        )
-        self.monitor_toggle_button.pack(side="right", padx=(0, 8))
+        text_label(monitor, "自动登录", 11, "bold").pack(anchor="w")
+        text_label(
+            monitor,
+            "程序驻留系统托盘，定期检查校园网状态，掉线时自动重新认证。",
+            8,
+            color=MUTED,
+        ).pack(anchor="w", pady=(3, 12))
         values = tk.Frame(monitor, bg=CARD)
         values.pack(fill="x")
         self.check_interval = tk.IntVar()
@@ -814,12 +813,14 @@ class GDUTApp(tk.Tk):
             values.columnconfigure(index, weight=1)
         toggles = tk.Frame(monitor, bg=CARD)
         toggles.pack(fill="x", pady=(12, 0))
+        self.auto_login = tk.BooleanVar()
         self.notifications = tk.BooleanVar()
         self.autostart = tk.BooleanVar()
         self.auto_updates = tk.BooleanVar()
-        check_box(toggles, "连接失败时通知", self.notifications).pack(side="left")
-        check_box(toggles, "开机后台运行", self.autostart).pack(side="left", padx=18)
-        check_box(toggles, "自动检查更新", self.auto_updates).pack(side="left")
+        check_box(toggles, "启用自动登录", self.auto_login).pack(side="left")
+        check_box(toggles, "连接失败时通知", self.notifications).pack(side="left", padx=18)
+        check_box(toggles, "开机自动启动", self.autostart).pack(side="left")
+        check_box(toggles, "自动检查更新", self.auto_updates).pack(side="left", padx=18)
 
         logs = self.card(body)
         logs.pack(fill="x", pady=(0, 12))
@@ -869,6 +870,7 @@ class GDUTApp(tk.Tk):
             self.check_interval,
             self.retry_interval,
             self.login_cooldown,
+            self.auto_login,
             self.notifications,
             self.autostart,
             self.auto_updates,
@@ -1063,6 +1065,8 @@ class GDUTApp(tk.Tk):
             self.check_interval.set(int(config.get("check_interval_seconds", 30)))
             self.retry_interval.set(int(config.get("retry_interval_seconds", 15)))
             self.login_cooldown.set(int(config.get("login_cooldown_seconds", 60)))
+            self.auto_login.set(bool(config.get("auto_login_enabled", True)))
+            self._auto_login_enabled = self.auto_login.get()
             self.notifications.set(bool(config.get("notifications_enabled", True)))
             self.autostart.set(bool(config.get("autostart_enabled", True)))
             self.auto_updates.set(bool(config.get("auto_check_updates", True)))
@@ -1115,6 +1119,7 @@ class GDUTApp(tk.Tk):
                     "retry_interval_seconds": max(5, int(self.retry_interval.get())),
                     "login_cooldown_seconds": max(15, int(self.login_cooldown.get())),
                     "notifications_enabled": self.notifications.get(),
+                    "auto_login_enabled": self.auto_login.get(),
                     "autostart_enabled": self.autostart.get(),
                     "auto_check_updates": self.auto_updates.get(),
                     "log_max_mb": int(self.log_size.get().split()[0]),
@@ -1124,10 +1129,9 @@ class GDUTApp(tk.Tk):
                 }
             )
             save_config(config)
+            self._auto_login_enabled = bool(config.get("auto_login_enabled", True))
             if previous_autostart != self.autostart.get():
                 set_autostart(self.autostart.get())
-                if self.autostart.get():
-                    start_monitor()
             if (
                 previous_log_size != config["log_max_mb"]
                 or previous_log_retention != config["log_retention_days"]
@@ -1153,73 +1157,120 @@ class GDUTApp(tk.Tk):
                 pass
             self._settings_apply_after = None
             self.apply_settings()
+        self.withdraw()
+        self._hint_close_to_tray()
+
+    def show_window(self):
+        self.deiconify()
+        self.lift()
+        try:
+            self.focus_force()
+        except tk.TclError:
+            pass
+
+    def quit_app(self):
+        if self._settings_apply_after:
+            try:
+                self.after_cancel(self._settings_apply_after)
+            except tk.TclError:
+                pass
+            self._settings_apply_after = None
+            self.apply_settings()
+        try:
+            if self.monitor.is_alive():
+                self.monitor.stop()
+                self.monitor.join(timeout=2)
+        except Exception:
+            pass
+        try:
+            from .service import base_status
+            from .storage import save_status
+            status = base_status()
+            status.update({"monitor_running": False, "state_text": "自动登录已停止"})
+            save_status(status)
+        except Exception:
+            pass
+        try:
+            if self._tray:
+                self._tray.stop()
+        except Exception:
+            pass
+        try:
+            self._show_watcher.stop()
+        except Exception:
+            pass
         self.destroy()
 
-    def update_monitor_controls(self, running: bool):
-        self._monitor_running = running
-        if not hasattr(self, "monitor_toggle_button"):
+    def _setup_tray(self):
+        try:
+            self._tray = TrayIcon(
+                tooltip=f"{APP_NAME}",
+                on_activate=lambda: self.after(0, self.show_window),
+                get_menu_items=self._tray_menu_items,
+                on_command=self._on_tray_command,
+            )
+            self._tray.start()
+        except Exception:
+            self._tray = None
+
+    def _tray_menu_items(self):
+        autostart = bool(load_config().get("autostart_enabled", True))
+        return [
+            ("打开主窗口", "cmd"),
+            ("立即检查", "cmd"),
+            ("", "sep"),
+            ("开机自启", "check" if autostart else "cmd"),
+            ("", "sep"),
+            ("退出", "cmd"),
+        ]
+
+    def _on_tray_command(self, label: str, kind: str):
+        if label == "打开主窗口":
+            self.after(0, self.show_window)
+        elif label == "立即检查":
+            self.after(0, lambda: self.run_check(True))
+        elif label == "开机自启":
+            self.after(0, self.toggle_autostart)
+        elif label == "退出":
+            self.after(0, self.quit_app)
+
+    def toggle_autostart(self):
+        config = load_config()
+        enabled = not bool(config.get("autostart_enabled", True))
+        try:
+            set_autostart(enabled)
+        except Exception as exc:
+            messagebox.showerror("开机自启设置失败", str(exc), parent=self)
             return
-        if self._monitor_busy:
-            self.monitor_toggle_button.configure(state="disabled")
-            self.restart_monitor_button.configure(state="disabled")
+        config["autostart_enabled"] = enabled
+        save_config(config)
+        self.load_settings()
+
+    def _hint_close_to_tray(self):
+        if not self._tray:
             return
-        self.monitor_toggle_button.configure(
-            text="停止后台" if running else "启动后台",
-            command=lambda: self.manage_monitor("stop" if running else "start"),
-            state="normal",
-            bg="#FFF0F0" if running else PRIMARY,
-            fg=DANGER if running else "white",
-            activebackground="#FFE1E1" if running else PRIMARY_HOVER,
-            activeforeground=DANGER if running else "white",
+        config = load_config()
+        if config.get("close_to_tray_hinted", False):
+            return
+        self._tray.show_balloon(
+            "仍在后台运行",
+            "GDUT 自动登录已隐藏到任务栏托盘，右键托盘图标可打开或退出。",
         )
-        self.restart_monitor_button.configure(state="normal")
-        self.monitor_state_label.configure(
-            text="后台服务正在运行 · 关闭窗口不受影响" if running else "后台服务已停止",
-            fg=SUCCESS if running else MUTED,
-        )
+        config["close_to_tray_hinted"] = True
+        save_config(config)
 
-    def manage_monitor(self, action: str):
-        if self._monitor_busy:
+    def _update_tray_tooltip(self, status: dict):
+        if not self._tray:
             return
-        self._monitor_busy = True
-        labels = {"start": "正在启动后台……", "stop": "正在停止后台……", "restart": "正在重启后台……"}
-        self.settings_feedback.set(labels[action])
-        self.settings_feedback_label.configure(fg=MUTED)
-        self.update_monitor_controls(self._monitor_running)
+        enabled = self.monitor.is_alive() and self._auto_login_enabled
+        suffix = "自动登录已启用" if enabled else "自动登录已暂停"
+        text = f"{status.get('state_text') or '尚未检查'} · {suffix}"
+        if text != self._tray_tooltip:
+            self._tray_tooltip = text
+            self._tray.set_tooltip(f"{APP_NAME}\n{text}")
 
-        def worker():
-            try:
-                if action == "start":
-                    running = start_monitor()
-                elif action == "stop":
-                    stop_monitor()
-                    running = False
-                else:
-                    running = restart_monitor()
-                if action != "stop" and not running:
-                    raise RuntimeError("后台服务未能启动，请查看日志")
-                error = None
-            except Exception as exc:
-                running, error = monitor_process_running(), exc
-            self.after(0, lambda: self.monitor_action_finished(action, running, error))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def monitor_action_finished(self, action: str, running: bool, error: Exception | None):
-        self._monitor_busy = False
-        self.update_monitor_controls(running)
-        if error:
-            self.settings_feedback.set(f"后台操作失败：{error}")
-            self.settings_feedback_label.configure(fg=DANGER)
-        else:
-            messages = {"start": "后台服务已启动", "stop": "后台服务已停止", "restart": "后台服务已重启"}
-            self.settings_feedback.set(messages[action])
-            self.settings_feedback_label.configure(fg=SUCCESS)
-            self.after(2500, self.reset_settings_feedback)
-        status = load_status()
-        status["monitor_running"] = running
+    def _on_monitor_status(self, status: dict):
         self.update_status_display(status)
-        self.refresh_logs()
 
     def selected_log_filters(self) -> tuple[int, str]:
         day_map = {"今天": 1, "最近 7 天": 7, "最近 30 天": 30, "全部时间": 0}
@@ -1229,7 +1280,7 @@ class GDUTApp(tk.Tk):
     def clear_logs(self):
         if not messagebox.askyesno(
             "清空日志",
-            "确定清空全部日志吗？此操作不会影响账号、设置或后台检测。",
+            "确定清空全部日志吗？此操作不会影响账号、设置或自动登录。",
             parent=self,
         ):
             return
@@ -1312,7 +1363,7 @@ class GDUTApp(tk.Tk):
             try:
                 result, error = perform_check(
                     login_if_needed=login,
-                    monitor_running=monitor_process_running(),
+                    monitor_running=True,
                 ), None
             except Exception as exc:
                 result, error = {}, exc
@@ -1333,10 +1384,13 @@ class GDUTApp(tk.Tk):
             self.refresh_logs()
 
     def poll_status(self):
-        status = load_status()
-        status["monitor_running"] = monitor_process_running()
-        self.update_status_display(status)
-        self.after(2500, self.poll_status)
+        try:
+            while True:
+                self._on_monitor_status(self._status_queue.get_nowait())
+        except queue.Empty:
+            pass
+        self.update_status_display(load_status())
+        self.after(1500, self.poll_status)
 
     def update_status_display(self, status: dict):
         state = status.get("state", "unknown")
@@ -1346,9 +1400,9 @@ class GDUTApp(tk.Tk):
         self.status_dot.configure(fg=color)
         self.status_hint.configure(text=status.get("network_profile") or "等待所选网络接口连接")
         self.sidebar_status.configure(text=f"●  {state_text}", fg=color)
-        monitor_running = bool(status.get("monitor_running"))
-        self.stat_vars["monitor"].set("正在运行" if monitor_running else "未运行")
-        self.update_monitor_controls(monitor_running)
+        monitor_active = self.monitor.is_alive() and self._auto_login_enabled
+        self.stat_vars["monitor"].set("已启用" if monitor_active else "已暂停")
+        self._update_tray_tooltip(status)
         self.stat_vars["account"].set(status.get("last_success_account") or "—")
         self.stat_vars["check"].set(local_time(status.get("last_check_at", "")))
         for key, value in (
@@ -1447,7 +1501,7 @@ class GDUTApp(tk.Tk):
             self.install_button.configure(state="normal")
             return
         launch_update_installer(path)
-        self.destroy()
+        self.quit_app()
 
     def finish_install(self):
         """Finish installation silently; the live status on the overview is the feedback."""
@@ -1455,10 +1509,9 @@ class GDUTApp(tk.Tk):
             config = load_config()
             if config.get("autostart_enabled", True):
                 set_autostart(True)
-                start_monitor()
             self.after(700, lambda: self.update_status_display(load_status()))
         except Exception as exc:
-            self.status_var.set("后台启动失败")
+            self.status_var.set("自动登录启动失败")
             self.status_hint.configure(text=str(exc))
 
     def uninstall_app(self):
@@ -1471,8 +1524,7 @@ class GDUTApp(tk.Tk):
         )
         try:
             set_autostart(False)
-            stop_monitor()
             schedule_self_removal(remove_data)
-            self.destroy()
+            self.quit_app()
         except Exception as exc:
             messagebox.showerror("卸载失败", str(exc), parent=self)

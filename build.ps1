@@ -11,13 +11,14 @@ python -m PyInstaller `
     --clean `
     --onefile `
     --windowed `
+    --icon .\assets\app.ico `
     --name GDUTAutoLogin `
     --version-file .\version_info.txt `
     .\app.py
 
 $releaseDir = Join-Path $projectDir 'release'
 New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
-$releaseExe = Join-Path $releaseDir 'GDUTAutoLogin-1.1.3-win64.exe'
+$releaseExe = Join-Path $releaseDir 'GDUTAutoLogin-1.2.0-win64.exe'
 Copy-Item -LiteralPath .\dist\GDUTAutoLogin.exe -Destination $releaseExe -Force
 
 $selfTest = Join-Path $releaseDir 'self-test.json'
