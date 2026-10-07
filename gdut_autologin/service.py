@@ -24,7 +24,7 @@ STATUS_TEXT = {
     "unexpected_response": "网络响应异常",
     "adapter_missing": "等待所选网络接口连接",
     "adapter_down": "等待所选网络接口连接",
-    "no_ip": "等待所选网络接口获取 10 网段地址",
+    "no_ip": "等待所选网络接口获取 IP 地址",
     "login_failed": "自动登录失败",
     "busy": "正在执行其他网络操作",
     "paused": "自动登录已暂停",

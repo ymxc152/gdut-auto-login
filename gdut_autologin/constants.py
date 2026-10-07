@@ -7,7 +7,7 @@ import sys
 
 APP_NAME = "GDUT 校园网自动登录"
 APP_ID = "GDUTAutoLogin"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 TASK_NAME = "GDUT Auto Login"
 MUTEX_APP = "Local\\GDUT_AutoLogin_App_V1"
 MUTEX_ACTION = "Local\\GDUT_AutoLogin_Action_V2"
@@ -60,3 +60,4 @@ DEFAULT_CONFIG = {
 
 def ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+

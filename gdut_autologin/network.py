@@ -212,8 +212,20 @@ def select_adapter(config: dict) -> AdapterInfo | None:
 
 
 def adapter_source_ip(adapter: AdapterInfo, config: dict) -> str:
+    """Pick the source IP for probe/login traffic.
+
+    Prefer a campus 10.x address, but fall back to any usable IPv4 on the
+    adapter (e.g. a non-10 subnet). Link-local APIPA addresses are skipped
+    because they mean DHCP failed and traffic cannot reach the portal.
+    """
     prefixes = tuple(config.get("ip_prefixes") or ["10."])
-    return next((ip for ip in adapter.ipv4 if ip.startswith(prefixes)), "")
+    preferred = next((ip for ip in adapter.ipv4 if ip.startswith(prefixes)), "")
+    if preferred:
+        return preferred
+    return next(
+        (ip for ip in adapter.ipv4 if not ip.startswith("169.254.")),
+        "",
+    )
 
 
 def http_get_bound(

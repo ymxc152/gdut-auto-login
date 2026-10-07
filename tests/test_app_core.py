@@ -9,6 +9,7 @@ from gdut_autologin import service
 from gdut_autologin import gui
 from gdut_autologin.network import (
     AdapterInfo,
+    adapter_source_ip,
     connected_physical_adapters,
     login_account,
     normalize_mac,
@@ -106,6 +107,20 @@ class NetworkCoreTests(unittest.TestCase):
         with patch("gdut_autologin.network.list_adapters", return_value=adapters):
             selected = select_adapter({"adapter_mac": "AA-02"})
         self.assertEqual(selected.name, "Ethernet")
+
+    def test_adapter_source_ip_prefers_configured_10_prefix(self):
+        adapter = AdapterInfo("Wi-Fi", "AA-01", "已连接", ["192.168.1.2", "10.1.2.3"], True)
+        self.assertEqual(adapter_source_ip(adapter, {}), "10.1.2.3")
+
+    def test_adapter_source_ip_falls_back_to_other_subnet(self):
+        adapter = AdapterInfo("Wi-Fi", "AA-01", "已连接", ["192.168.1.2"], True)
+        self.assertEqual(adapter_source_ip(adapter, {}), "192.168.1.2")
+
+    def test_adapter_source_ip_skips_apipa_address(self):
+        adapter = AdapterInfo("Wi-Fi", "AA-01", "已连接", ["169.254.10.2", "192.168.1.2"], True)
+        self.assertEqual(adapter_source_ip(adapter, {}), "192.168.1.2")
+        adapter = AdapterInfo("Wi-Fi", "AA-01", "已连接", ["169.254.10.2"], True)
+        self.assertEqual(adapter_source_ip(adapter, {}), "")
 
     def test_login_request_uses_selected_adapter_source_ip(self):
         config = {
@@ -250,7 +265,7 @@ class UpdateCoreTests(unittest.TestCase):
     def test_update_info_defaults_to_current_version(self):
         info = UpdateInfo()
         self.assertFalse(info.available)
-        self.assertEqual(info.current_version, "1.2.1")
+        self.assertEqual(info.current_version, "1.2.2")
 
     def test_replace_with_retry_replaces_existing_file(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -439,5 +454,6 @@ class MonitorWaitingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
