@@ -265,7 +265,7 @@ class UpdateCoreTests(unittest.TestCase):
     def test_update_info_defaults_to_current_version(self):
         info = UpdateInfo()
         self.assertFalse(info.available)
-        self.assertEqual(info.current_version, "1.2.2")
+        self.assertEqual(info.current_version, "1.2.3")
 
     def test_replace_with_retry_replaces_existing_file(self):
         with tempfile.TemporaryDirectory() as temporary:

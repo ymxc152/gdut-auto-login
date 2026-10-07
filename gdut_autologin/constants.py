@@ -7,7 +7,7 @@ import sys
 
 APP_NAME = "GDUT 校园网自动登录"
 APP_ID = "GDUTAutoLogin"
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 TASK_NAME = "GDUT Auto Login"
 MUTEX_APP = "Local\\GDUT_AutoLogin_App_V1"
 MUTEX_ACTION = "Local\\GDUT_AutoLogin_Action_V2"
@@ -53,8 +53,6 @@ DEFAULT_CONFIG = {
     "log_max_mb": 20,
     "log_retention_days": 0,
     "auto_check_updates": True,
-    "auto_download_updates": False,
-    "update_channel": "stable",
 }
 
 

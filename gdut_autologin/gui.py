@@ -854,6 +854,11 @@ class GDUTApp(tk.Tk):
         update_header.pack(fill="x")
         self.update_title = text_label(update_header, f"软件更新 · v{APP_VERSION}", 11, "bold")
         self.update_title.pack(side="left")
+        self.install_slot = tk.Frame(update_header, bg=CARD)
+        self.install_slot.pack(side="right")
+        self.install_button = flat_button(
+            self.install_slot, "下载并安装", self.download_and_install, "primary"
+        )
         self.update_button = flat_button(update_header, "检查更新", self.check_updates)
         self.update_button.pack(side="right")
         self.update_message = text_label(
@@ -863,7 +868,6 @@ class GDUTApp(tk.Tk):
         self.update_progress = ttk.Progressbar(
             update, mode="determinate", style="Modern.Horizontal.TProgressbar"
         )
-        self.install_button = flat_button(update, "下载并安装", self.download_and_install, "primary")
 
         self.adapter_combo.bind("<<ComboboxSelected>>", self.schedule_settings_apply)
         for variable in (
@@ -1448,7 +1452,7 @@ class GDUTApp(tk.Tk):
             self.update_message.configure(text=f"发现新版本 {latest}", fg=TEXT)
             self.install_button.configure(state="normal")
             if not self.install_button.winfo_ismapped():
-                self.install_button.pack(anchor="e", pady=(7, 0))
+                self.install_button.pack(padx=(8, 0))
         else:
             self.update_message.configure(
                 text=f"已是最新版本 · {local_time(data.get('checked_at', ''))}", fg=SUCCESS
@@ -1492,14 +1496,7 @@ class GDUTApp(tk.Tk):
             self.install_button.configure(state="normal")
             return
         self.update_progress.pack_forget()
-        if not messagebox.askyesno(
-            "安装更新",
-            "新版已下载并通过校验。现在关闭程序并安装吗？",
-            parent=self,
-        ):
-            self.update_message.configure(text="新版已下载，可稍后安装", fg=SUCCESS)
-            self.install_button.configure(state="normal")
-            return
+        self.update_message.configure(text="校验通过，正在安装更新……", fg=SUCCESS)
         launch_update_installer(path)
         self.quit_app()
 
