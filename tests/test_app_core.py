@@ -59,14 +59,23 @@ class NetworkCoreTests(unittest.TestCase):
         result = connected_physical_adapters(adapters)
         self.assertEqual([item.name for item in result], ["WLAN", "Other"])
 
-    def test_select_adapter_switches_from_disconnected_saved_adapter(self):
+    def test_select_adapter_strict_mode_keeps_disconnected_saved_adapter(self):
         adapters = [
             AdapterInfo("Old", "AA-01", "已断开", [], True),
             AdapterInfo("Ethernet", "AA-02", "已连接", ["10.8.8.8"], True),
         ]
         with patch("gdut_autologin.network.list_adapters", return_value=adapters):
             selected = select_adapter({"adapter_mac": "AA-01", "adapter_name": "Old"})
-        self.assertEqual(selected.name, "Ethernet")
+        self.assertEqual(selected.name, "Old")
+        self.assertEqual(selected.status, "已断开")
+
+    def test_select_adapter_strict_mode_waits_when_saved_adapter_is_missing(self):
+        adapters = [
+            AdapterInfo("Ethernet", "AA-02", "已连接", ["10.8.8.8"], True),
+        ]
+        with patch("gdut_autologin.network.list_adapters", return_value=adapters):
+            selected = select_adapter({"adapter_mac": "AA-99", "adapter_name": "Gone"})
+        self.assertIsNone(selected)
 
     def test_parse_current_wifi_ssid_from_netsh_output(self):
         output = """
@@ -241,7 +250,7 @@ class UpdateCoreTests(unittest.TestCase):
     def test_update_info_defaults_to_current_version(self):
         info = UpdateInfo()
         self.assertFalse(info.available)
-        self.assertEqual(info.current_version, "1.2.0")
+        self.assertEqual(info.current_version, "1.2.1")
 
     def test_replace_with_retry_replaces_existing_file(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -272,7 +281,7 @@ class MonitorThreadTests(unittest.TestCase):
         ), patch.object(
             service,
             "load_config",
-            return_value={"auto_login_enabled": True, "check_interval_seconds": 30},
+            return_value={"auto_login_enabled": True, "check_interval_seconds": 30, "auto_check_updates": False},
         ), patch.object(service, "perform_check", side_effect=fake_check), patch.object(
             service, "save_status"
         ):
@@ -430,3 +439,5 @@ class MonitorWaitingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+

@@ -181,7 +181,6 @@ def select_adapter(config: dict) -> AdapterInfo | None:
         return None
     configured_mac = normalize_mac(config.get("adapter_mac", ""))
     configured_name = str(config.get("adapter_name", "")).strip()
-    prefixes = tuple(config.get("ip_prefixes") or ["10."])
     configured_adapter = None
     if configured_mac:
         configured_adapter = next(
@@ -191,17 +190,25 @@ def select_adapter(config: dict) -> AdapterInfo | None:
         configured_adapter = next(
             (item for item in physical if item.name.casefold() == configured_name.casefold()), None
         )
-    if configured_adapter and configured_adapter.status == "已连接":
+    if configured_adapter is not None:
+        # Strict mode: once an adapter is configured, never borrow another
+        # interface (other Wi-Fi/VPN). If it is disconnected, the caller
+        # reports adapter_down and waits for this adapter to come back.
         return configured_adapter
-    connected = [item for item in physical if item.status == "已连接"]
-    preferred = [
-        item for item in connected if any(ip.startswith(prefixes) for ip in item.ipv4)
-    ]
-    if len(preferred) == 1:
-        return preferred[0]
-    if len(connected) == 1:
-        return connected[0]
-    return configured_adapter
+    if not (configured_mac or configured_name):
+        # No adapter configured yet: fall back to the only connected
+        # physical interface so first-run auto login still works.
+        prefixes = tuple(config.get("ip_prefixes") or ["10."])
+        connected = [item for item in physical if item.status == "已连接"]
+        preferred = [
+            item for item in connected if any(ip.startswith(prefixes) for ip in item.ipv4)
+        ]
+        if len(preferred) == 1:
+            return preferred[0]
+        if len(connected) == 1:
+            return connected[0]
+    return None
+
 
 
 def adapter_source_ip(adapter: AdapterInfo, config: dict) -> str:
