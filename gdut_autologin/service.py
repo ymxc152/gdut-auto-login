@@ -54,7 +54,9 @@ def base_status() -> dict:
     }
 
 
-def perform_check(login_if_needed: bool = True, monitor_running: bool = False) -> dict:
+def perform_check(
+    login_if_needed: bool = True, monitor_running: bool = False, force_login: bool = False
+) -> dict:
     logger, _database = build_logger("gdut-action")
     with action_mutex(timeout_ms=1000) as lock:
         if not lock.acquired:
@@ -94,14 +96,16 @@ def perform_check(login_if_needed: bool = True, monitor_running: bool = False) -
         online, reason = probe_network(source_ip)
         if online:
             status.update({"state": "online", "state_text": STATUS_TEXT["online"]})
-            save_status(status)
-            return status
-        status.update({"state": reason, "state_text": STATUS_TEXT.get(reason, reason)})
-        if not login_if_needed:
-            save_status(status)
-            return status
-
-        logger.warning("GDUT 网卡 %s（%s）需要重新认证", adapter.name, source_ip)
+            if not force_login:
+                save_status(status)
+                return status
+            logger.info("应手动请求，对网卡 %s（%s）强制重新认证", adapter.name, source_ip)
+        else:
+            status.update({"state": reason, "state_text": STATUS_TEXT.get(reason, reason)})
+            if not login_if_needed:
+                save_status(status)
+                return status
+            logger.warning("GDUT 网卡 %s（%s）需要重新认证", adapter.name, source_ip)
         success, masked = try_authorized_accounts(source_ip, config, logger)
         if success:
             status.update(
@@ -112,6 +116,11 @@ def perform_check(login_if_needed: bool = True, monitor_running: bool = False) -
                     "last_error": "",
                 }
             )
+        elif online:
+            # Manual forced re-auth was rejected, but the network itself is
+            # still reachable: keep the online state instead of a false alarm.
+            status["last_error"] = "重新认证未成功，但网络当前可用"
+            logger.warning("强制重新认证未成功，网络当前仍可用")
         else:
             status.update(
                 {

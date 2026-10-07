@@ -265,7 +265,7 @@ class UpdateCoreTests(unittest.TestCase):
     def test_update_info_defaults_to_current_version(self):
         info = UpdateInfo()
         self.assertFalse(info.available)
-        self.assertEqual(info.current_version, "1.2.3")
+        self.assertEqual(info.current_version, "1.2.4")
 
     def test_replace_with_retry_replaces_existing_file(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -444,6 +444,50 @@ class MonitorWaitingTests(unittest.TestCase):
         self.assertEqual(status["state"], "adapter_missing")
         self.assertEqual(status["state_text"], "等待所选网络接口连接")
         logger.warning.assert_not_called()
+
+    def test_forced_reconnect_reauths_even_when_online(self):
+        logger = MagicMock()
+        lock = MagicMock(acquired=True)
+        mutex = MagicMock()
+        mutex.__enter__.return_value = lock
+        adapter = AdapterInfo("Wired", "AA-01", "已连接", ["10.1.2.3"], True)
+        with patch.object(service, "build_logger", return_value=(logger, MagicMock())), patch.object(
+            service, "action_mutex", return_value=mutex
+        ), patch.object(service, "load_state", return_value={}), patch.object(
+            service, "load_config", return_value={}
+        ), patch.object(service, "select_adapter", return_value=adapter), patch.object(
+            service, "adapter_source_ip", return_value="10.1.2.3"
+        ), patch.object(
+            service, "probe_network", return_value=(True, "online")
+        ), patch.object(
+            service, "try_authorized_accounts", return_value=(True, "a***t")
+        ) as try_accounts, patch.object(service, "save_status"):
+            status = service.perform_check(monitor_running=True, force_login=True)
+        try_accounts.assert_called_once()
+        self.assertEqual(status["state"], "online")
+        self.assertEqual(status["last_success_account"], "a***t")
+
+    def test_forced_reconnect_failure_keeps_online_when_reachable(self):
+        logger = MagicMock()
+        lock = MagicMock(acquired=True)
+        mutex = MagicMock()
+        mutex.__enter__.return_value = lock
+        adapter = AdapterInfo("Wired", "AA-01", "已连接", ["10.1.2.3"], True)
+        with patch.object(service, "build_logger", return_value=(logger, MagicMock())), patch.object(
+            service, "action_mutex", return_value=mutex
+        ), patch.object(service, "load_state", return_value={}), patch.object(
+            service, "load_config", return_value={}
+        ), patch.object(service, "select_adapter", return_value=adapter), patch.object(
+            service, "adapter_source_ip", return_value="10.1.2.3"
+        ), patch.object(
+            service, "probe_network", return_value=(True, "online")
+        ), patch.object(
+            service, "try_authorized_accounts", return_value=(False, "")
+        ), patch.object(service, "save_status"):
+            status = service.perform_check(monitor_running=True, force_login=True)
+        self.assertEqual(status["state"], "online")
+        self.assertNotEqual(status["last_error"], "")
+        logger.critical.assert_not_called()
 
     def test_disconnected_states_are_silent_waiting_states(self):
         self.assertEqual(

@@ -628,7 +628,7 @@ class GDUTApp(tk.Tk):
         self.check_button = flat_button(actions, "立即检查", lambda: self.run_check(False))
         self.check_button.pack(side="left", padx=(0, 8))
         self.login_button = flat_button(
-            actions, "重新连接", lambda: self.run_check(True), "primary"
+            actions, "重新连接", lambda: self.run_check(True, force=True), "primary"
         )
         self.login_button.pack(side="left")
 
@@ -1355,7 +1355,7 @@ class GDUTApp(tk.Tk):
             text_label(row, message, 8, wraplength=380, justify="left").pack(side="left", fill="x", expand=True)
             text_label(row, local_time(timestamp)[5:16], 7, color=MUTED).pack(side="right", padx=(8, 0))
 
-    def run_check(self, login: bool):
+    def run_check(self, login: bool, force: bool = False):
         if self._busy:
             return
         self._busy = True
@@ -1368,6 +1368,7 @@ class GDUTApp(tk.Tk):
                 result, error = perform_check(
                     login_if_needed=login,
                     monitor_running=True,
+                    force_login=force,
                 ), None
             except Exception as exc:
                 result, error = {}, exc
